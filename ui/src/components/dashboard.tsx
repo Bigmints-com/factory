@@ -10,6 +10,7 @@ import { BuildLog } from '@/components/build-log';
 import { ReportViewer } from '@/components/report-viewer';
 import { QueueView } from '@/components/queue-view';
 import { KnowledgeView } from '@/components/knowledge-view';
+import { SettingsView } from '@/components/settings-view';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Separator } from '@/components/ui/separator';
@@ -710,13 +711,7 @@ export default function Dashboard() {
             </div>
           )}
           {activeTab === 'settings' && (
-            <div className="flex flex-col items-center justify-center py-24 text-center">
-              <Settings className="h-12 w-12 text-muted-foreground/30 mb-4" />
-              <h2 className="text-lg font-semibold">Settings</h2>
-              <p className="text-sm text-muted-foreground mt-1 max-w-md">
-                Configure factory defaults, build preferences, and output templates. Coming soon.
-              </p>
-            </div>
+            <SettingsView />
           )}
         </div>
         )}

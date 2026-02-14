@@ -7,3 +7,4 @@ reference/
 *.log
 *.db
 package-lock.json
+settings.json
