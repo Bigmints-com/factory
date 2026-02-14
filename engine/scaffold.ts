@@ -31,12 +31,16 @@ export function scaffoldApp(spec: AppSpec, targetDir?: string): string {
 
     const outputDir = targetDir || resolve(PATHS.output, spec.metadata.slug);
 
-    // Clean previous output if exists
+    // Clean previous output — preserve project-specific dirs (.factory, .git, node_modules)
+    const PRESERVE = new Set(['.factory', '.git', 'node_modules', '.gitignore']);
     if (existsSync(outputDir)) {
-        log('!', `Cleaning previous output at ${outputDir}`);
-        cpSync(outputDir, `${outputDir}.bak`, { recursive: true });
-        // Remove old output
-        rmSync(outputDir, { recursive: true, force: true });
+        log('!', `Cleaning previous output at ${outputDir} (preserving .factory, .git)`);
+        const existing = readdirSync(outputDir);
+        for (const entry of existing) {
+            if (PRESERVE.has(entry)) continue;
+            const fullPath = join(outputDir, entry);
+            rmSync(fullPath, { recursive: true, force: true });
+        }
     }
 
     ensureDir(outputDir);
