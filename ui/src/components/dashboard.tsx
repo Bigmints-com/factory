@@ -6,6 +6,7 @@ import { Sidebar } from '@/components/sidebar';
 import { AddProject } from '@/components/add-project';
 import { SpecCard } from '@/components/spec-card';
 import { SpecEditor } from '@/components/spec-editor';
+import { SpecChat } from '@/components/spec-chat';
 import { BuildLog } from '@/components/build-log';
 import { ReportViewer } from '@/components/report-viewer';
 import { QueueView } from '@/components/queue-view';
@@ -24,7 +25,8 @@ import {
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { FileText, Package, CheckCircle2, AlertCircle, Activity, Puzzle, Server, Globe, Database, Layers, ListPlus, ListOrdered, X, PanelRight, Terminal, FolderOpen, Plug, Settings, Eye } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { FileText, Package, CheckCircle2, AlertCircle, Activity, Puzzle, Server, Globe, Database, Layers, ListPlus, ListOrdered, X, PanelRight, Terminal, FolderOpen, Plug, Settings, Eye, Plus, Loader2 as Spinner, Sparkles } from 'lucide-react';
 
 interface Spec {
   file: string;
@@ -64,16 +66,9 @@ interface ValidationCheck {
 
 const VALID_TABS = ['dashboard', 'queue', 'specs', 'reports', 'knowledge', 'projects', 'integrations', 'settings'];
 
-function getInitialTab(): string {
-  if (typeof window !== 'undefined') {
-    const hash = window.location.hash.replace('#', '');
-    if (VALID_TABS.includes(hash)) return hash;
-  }
-  return 'dashboard';
-}
-
 export default function Dashboard() {
-  const [activeTab, setActiveTab] = useState(getInitialTab);
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [showAddProject, setShowAddProject] = useState(false);
   const [specs, setSpecs] = useState<Spec[]>([]);
   const [featureSpecs, setFeatureSpecs] = useState<FeatureSpecItem[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
@@ -89,12 +84,12 @@ export default function Dashboard() {
     file: string;
   } | null>(null);
   const [outputPanelOpen, setOutputPanelOpen] = useState(false);
-  const [showAddProject, setShowAddProject] = useState(getInitialTab() === 'projects');
   const [hasProjects, setHasProjects] = useState(true); // optimistic
   const [activeProject, setActiveProject] = useState<{ id: string; name: string; path: string } | null>(null);
   const [projectCount, setProjectCount] = useState(0);
   const [projectRefreshKey, setProjectRefreshKey] = useState(0);
   const [editingSpec, setEditingSpec] = useState<{ file: string; name: string } | null>(null);
+  const [showSpecChat, setShowSpecChat] = useState(false);
 
   const fetchSpecs = useCallback(async () => {
     try {
@@ -135,6 +130,18 @@ export default function Dashboard() {
 
   useEffect(() => {
     Promise.all([fetchProjects(), fetchSpecs(), fetchReports()]).finally(() => setLoading(false));
+
+    // Handle initial tab from hash after mount
+    if (typeof window !== 'undefined') {
+      const hash = window.location.hash.replace('#', '');
+      if (VALID_TABS.includes(hash)) {
+        if (hash === 'projects') {
+          setShowAddProject(true);
+        } else {
+          setActiveTab(hash);
+        }
+      }
+    }
   }, [fetchProjects, fetchSpecs, fetchReports]);
 
   // Sync tab to URL hash
@@ -448,17 +455,34 @@ export default function Dashboard() {
     <div className="flex gap-6">
       {/* Left: Specs list */}
       <div className={`space-y-4 ${validationResult || buildOutput ? 'flex-1 min-w-0' : 'w-full'}`}>
-        {/* Stats bar */}
-        <div className="flex items-center gap-6 text-sm text-muted-foreground">
-          <span className="flex items-center gap-2">
-            <span className="h-2.5 w-2.5 rounded-full bg-blue-500" />
-            <span className="font-medium text-foreground">{specs.length}</span> App Specs
-          </span>
-          <span className="flex items-center gap-2">
-            <span className="h-2.5 w-2.5 rounded-full bg-purple-500" />
-            <span className="font-medium text-foreground">{featureSpecs.length}</span> Feature Specs
-          </span>
+        {/* Stats bar + New Spec button */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-6 text-sm text-muted-foreground">
+            <span className="flex items-center gap-2">
+              <span className="h-2.5 w-2.5 rounded-full bg-blue-500" />
+              <span className="font-medium text-foreground">{specs.length}</span> App Specs
+            </span>
+            <span className="flex items-center gap-2">
+              <span className="h-2.5 w-2.5 rounded-full bg-purple-500" />
+              <span className="font-medium text-foreground">{featureSpecs.length}</span> Feature Specs
+            </span>
+          </div>
+          <Button
+            size="sm"
+            onClick={() => setShowSpecChat(true)}
+            className="h-8 text-xs gap-1.5"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            New Spec
+          </Button>
         </div>
+
+        {/* Spec Chat Dialog */}
+        <SpecChat
+          open={showSpecChat}
+          onOpenChange={setShowSpecChat}
+          onSpecSaved={() => fetchSpecs()}
+        />
 
         {loading ? (
           <div className="space-y-3">

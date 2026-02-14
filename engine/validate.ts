@@ -95,13 +95,13 @@ export function validateSpec(spec: AppSpec): ValidationResult {
                 : `Slug "${spec.metadata.slug}" is available`,
         });
 
-        const dbConflict = registry.apps.find(a => a.database === spec.database.firestoreId);
+        const dbConflict = registry.apps.find(a => a.database === spec.database.databaseId);
         checks.push({
             name: 'No database ID conflict',
             passed: !dbConflict,
             message: dbConflict
-                ? `Database ID "${spec.database.firestoreId}" already used by "${dbConflict.name}"`
-                : `Database ID "${spec.database.firestoreId}" is available`,
+                ? `Database ID "${spec.database.databaseId}" already used by "${dbConflict.name}"`
+                : `Database ID "${spec.database.databaseId}" is available`,
         });
     } catch {
         checks.push({
@@ -239,11 +239,11 @@ export function validateOutput(slug: string, customOutputDir?: string): Validati
                 });
 
                 checks.push({
-                    name: 'app.config.json: has firestore config',
-                    passed: !!config.firestore?.databaseId,
-                    message: config.firestore?.databaseId
-                        ? `DB: ${config.firestore.databaseId}`
-                        : 'Missing firestore config',
+                    name: 'app.config.json: has database config',
+                    passed: !!(config.firestore?.databaseId || config.database?.databaseId),
+                    message: (config.firestore?.databaseId || config.database?.databaseId)
+                        ? `DB: ${config.firestore?.databaseId || config.database?.databaseId}`
+                        : 'Missing database config',
                 });
             } catch {
                 checks.push({

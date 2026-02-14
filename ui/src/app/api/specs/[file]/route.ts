@@ -21,16 +21,12 @@ function getSpecsBase(): string {
           (p: any) => p.id === config.activeProject
         );
         if (project) {
-          const projectSpecs = join(project.path, '.factory', 'specs');
-          const appsDir = join(projectSpecs, 'apps');
-          const hasFiles = existsSync(appsDir) &&
-            readdirSync(appsDir).some(f => (f.endsWith('.yaml') || f.endsWith('.yml')) && !f.startsWith('_'));
-          if (hasFiles) return projectSpecs;
+          return join(project.path, '.factory', 'specs');
         }
       }
     }
   } catch {}
-  return resolve(FACTORY_ROOT, 'specs');
+  return '';
 }
 
 function resolveSpecPath(file: string): string | null {

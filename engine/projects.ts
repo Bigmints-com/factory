@@ -17,6 +17,16 @@ export interface Project {
     name: string;
     path: string;
     addedAt: string;
+    stack?: ProjectStack;
+}
+
+export interface ProjectStack {
+    framework: string;
+    packageManager: string;
+    linter: string;
+    testing: string;
+    database?: string; // e.g. "firestore", "mongodb", "postgres"
+    cloud?: string;    // e.g. "gcp", "aws", "vercel"
 }
 
 export interface ProjectsConfig {
@@ -52,7 +62,7 @@ function saveProjects(config: ProjectsConfig): void {
  * Add a new project.  Runs bridge init if needed.
  * Returns the created project.
  */
-export function addProject(repoPath: string): { project: Project; bridge: BridgeConfig } {
+export function addProject(repoPath: string, stack?: ProjectStack): { project: Project; bridge: BridgeConfig } {
     const absPath = resolve(repoPath);
 
     if (!existsSync(absPath)) {
@@ -67,7 +77,7 @@ export function addProject(repoPath: string): { project: Project; bridge: Bridge
     }
 
     // Init bridge (creates .factory/ if not present)
-    const bridge = initBridge(absPath);
+    const bridge = initBridge(absPath, stack);
 
     // Create project entry
     const project: Project = {
@@ -75,6 +85,7 @@ export function addProject(repoPath: string): { project: Project; bridge: Bridge
         name: bridge.name,
         path: absPath,
         addedAt: new Date().toISOString(),
+        stack: bridge.stack,
     };
 
     // Ensure unique id

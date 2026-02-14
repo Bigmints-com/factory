@@ -1,17 +1,29 @@
 {
-  "activeProject": "agent-test",
+  "activeProject": "saveaday-monorepo",
   "projects": [
+    {
+      "id": "blah",
+      "name": "blah",
+      "path": "/Users/pretheesh/Projects/blah",
+      "addedAt": "2026-02-14T18:04:05.860Z",
+      "stack": {
+        "framework": "next.js",
+        "packageManager": "npm",
+        "linter": "EsLint + Prettier",
+        "testing": "jest"
+      }
+    },
     {
       "id": "saveaday-monorepo",
       "name": "saveaday-monorepo",
       "path": "/Users/pretheesh/Projects/saveaday",
-      "addedAt": "2026-02-14T10:11:24.788Z"
-    },
-    {
-      "id": "agent-test",
-      "name": "agent-test",
-      "path": "/Users/pretheesh/Projects/agent-test",
-      "addedAt": "2026-02-14T11:10:16.535Z"
+      "addedAt": "2026-02-14T18:17:38.916Z",
+      "stack": {
+        "framework": "next.js",
+        "packageManager": "npm",
+        "linter": "EsLint + Prettier",
+        "testing": "jest"
+      }
     }
   ]
 }

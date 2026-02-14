@@ -14,8 +14,8 @@ interface SidebarProps {
 
 const mainNav = [
   { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
-  { id: 'queue', label: 'Queue', icon: ListOrdered },
   { id: 'specs', label: 'Specs', icon: FileText },
+  { id: 'queue', label: 'Queue', icon: ListOrdered },
   { id: 'reports', label: 'Reports', icon: BarChart3 },
   { id: 'knowledge', label: 'Knowledge', icon: BookOpen },
 ];

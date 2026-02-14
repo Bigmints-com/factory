@@ -56,9 +56,16 @@ export async function POST(request: Request) {
       );
     }
 
+    const stack = body.stack || {};
+    let flags = '';
+    if (stack.framework) flags += ` --framework "${stack.framework}"`;
+    if (stack.packageManager) flags += ` --pm "${stack.packageManager}"`;
+    if (stack.linter) flags += ` --linter "${stack.linter}"`;
+    if (stack.testing) flags += ` --testing "${stack.testing}"`;
+
     // Run engine CLI to add project (this handles bridge init + project registration)
     const output = stripAnsi(execSync(
-      `npx tsx engine/cli.ts project add "${absPath}" 2>&1`,
+      `npx tsx engine/cli.ts project add "${absPath}"${flags} 2>&1`,
       { cwd: FACTORY_ROOT, encoding: 'utf-8', timeout: 30000 }
     ));
 

@@ -171,17 +171,18 @@ function handleStatus(): void {
     log('●', 'Task Queue Status');
     console.log('');
 
-    if (!existsSync(PATHS.specs)) {
-        log('!', 'No specs/ directory found.');
+    const specsAppsDir = resolve(PATHS.specs, 'apps');
+    if (!existsSync(specsAppsDir)) {
+        log('!', 'No specs/apps/ directory found.');
         return;
     }
 
-    const specFiles = readdirSync(PATHS.specs).filter(
+    const specFiles = readdirSync(specsAppsDir).filter(
         f => f.endsWith('.yaml') || f.endsWith('.yml')
     );
 
     if (specFiles.length === 0) {
-        log('!', 'No spec files found in specs/');
+        log('!', 'No spec files found in specs/apps/');
         return;
     }
 
@@ -201,7 +202,7 @@ function handleStatus(): void {
         if (file.startsWith('_')) continue; // Skip example files in table
 
         try {
-            const content = readFileSync(resolve(PATHS.specs, file), 'utf-8');
+            const content = readFileSync(resolve(specsAppsDir, file), 'utf-8');
             const spec = parseYaml(content) as AppSpec;
             const icon = statusIcons[spec.status] || '❓';
             console.log(`| ${icon} ${spec.status} | ${spec.metadata.slug} | ${spec.metadata.name} | ${spec.deployment.port} |`);
@@ -392,8 +393,18 @@ function handleProject(subcommand?: string, arg?: string): void {
 
     switch (subcommand) {
         case 'add': {
-            if (!arg) { console.error('Usage: factory project add <repo-path>'); process.exit(1); }
-            const { project, bridge } = addProject(arg);
+            if (!arg) { console.error('Usage: factory project add <repo-path> [--framework <f>] [--pm <p>] [--linter <l>] [--testing <t>]'); process.exit(1); }
+            
+            // Basic flag parsing
+            const stack: any = {};
+            for (let i = 3; i < args.length; i++) {
+                if (args[i] === '--framework') stack.framework = args[++i];
+                if (args[i] === '--pm') stack.packageManager = args[++i];
+                if (args[i] === '--linter') stack.linter = args[++i];
+                if (args[i] === '--testing') stack.testing = args[++i];
+            }
+
+            const { project, bridge } = addProject(arg, Object.keys(stack).length > 0 ? stack : undefined);
             log('✓', `Connected: ${project.name} (${project.path})`);
             break;
         }
@@ -447,7 +458,7 @@ function printUsage(): void {
     console.log('');
     console.log('Project Commands:');
     console.log('  init-bridge <repo-path>              Init .factory bridge in a repo');
-    console.log('  project add <repo-path>              Connect a repo as a project');
+    console.log('  project add <repo-path> [--framework <f>] [--pm <p>] [--linter <l>] [--testing <t>]');
     console.log('  project list                         List connected projects');
     console.log('  project switch <id>                  Switch active project');
     console.log('  project remove <id>                  Disconnect a project');

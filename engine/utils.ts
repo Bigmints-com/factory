@@ -20,7 +20,21 @@ export const PATHS = {
     conventions: resolve(FACTORY_ROOT, 'reference', 'conventions'),
     skills: resolve(FACTORY_ROOT, 'reference', 'skills'),
     patches: resolve(FACTORY_ROOT, 'reference', 'patches'),
-    specs: resolve(FACTORY_ROOT, 'specs'),
+    get specs() {
+        try {
+            const projectsPath = join(FACTORY_ROOT, 'projects.json');
+            if (existsSync(projectsPath)) {
+                const config = JSON.parse(readFileSync(projectsPath, 'utf-8'));
+                if (config.activeProject) {
+                    const project = config.projects.find((p: any) => p.id === config.activeProject);
+                    if (project) {
+                        return resolve(project.path, '.factory', 'specs');
+                    }
+                }
+            }
+        } catch { /* ignore */ }
+        return resolve(FACTORY_ROOT, 'specs');
+    },
     output: resolve(FACTORY_ROOT, 'output'),
     reports: resolve(FACTORY_ROOT, 'reports'),
 } as const;
@@ -32,7 +46,20 @@ export const PATHS = {
  * @returns Parsed AppSpec
  */
 export function loadSpec(specPath: string): AppSpec {
-    const abs = resolve(specPath);
+    // If path is relative and doesn't exist, try resolving it from the active specs dir
+    let abs = resolve(specPath);
+    if (!existsSync(abs)) {
+        const potential = resolve(PATHS.specs, 'apps', specPath);
+        if (existsSync(potential)) {
+            abs = potential;
+        } else {
+             const featurePotential = resolve(PATHS.specs, 'features', specPath);
+             if (existsSync(featurePotential)) {
+                 abs = featurePotential;
+             }
+        }
+    }
+
     if (!existsSync(abs)) {
         throw new Error(`Spec file not found: ${abs}`);
     }

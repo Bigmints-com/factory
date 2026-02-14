@@ -12,11 +12,10 @@ import { parse as parseYaml } from 'yaml';
 const FACTORY_ROOT = resolve(process.cwd(), '..');
 
 /**
- * Resolve the specs directories — active project's .factory/specs/ or factory's own.
+ * Resolve the specs directories — active project's .factory/specs/.
  */
 function getSpecsDirs(): { apps: string; features: string; source: string } {
   try {
-    // Try to load from active project
     const projectsPath = join(FACTORY_ROOT, 'projects.json');
     if (existsSync(projectsPath)) {
       const config = JSON.parse(readFileSync(projectsPath, 'utf-8'));
@@ -27,30 +26,17 @@ function getSpecsDirs(): { apps: string; features: string; source: string } {
         if (project) {
           const projectApps = join(project.path, '.factory', 'specs', 'apps');
           const projectFeatures = join(project.path, '.factory', 'specs', 'features');
-          const hasAppSpecs = existsSync(projectApps) &&
-            readdirSync(projectApps).some(f => (f.endsWith('.yaml') || f.endsWith('.yml')) && !f.startsWith('_'));
-          const hasFeatureSpecs = existsSync(projectFeatures) &&
-            readdirSync(projectFeatures).some(f => (f.endsWith('.yaml') || f.endsWith('.yml')) && !f.startsWith('_'));
-          if (hasAppSpecs || hasFeatureSpecs) {
-            return {
-              apps: projectApps,
-              features: projectFeatures,
-              source: project.name,
-            };
-          }
+          return {
+            apps: projectApps,
+            features: projectFeatures,
+            source: project.name,
+          };
         }
       }
     }
-  } catch {
-    // Fall through to factory specs
-  }
+  } catch {}
 
-  // Fallback: factory's own specs/
-  return {
-    apps: resolve(FACTORY_ROOT, 'specs', 'apps'),
-    features: resolve(FACTORY_ROOT, 'specs', 'features'),
-    source: 'factory',
-  };
+  return { apps: '', features: '', source: 'none' };
 }
 
 export async function GET() {
@@ -59,7 +45,7 @@ export async function GET() {
 
     // App specs
     let specs: any[] = [];
-    if (existsSync(APPS_DIR)) {
+    if (APPS_DIR && existsSync(APPS_DIR)) {
       const appFiles = readdirSync(APPS_DIR).filter(
         (f) => (f.endsWith('.yaml') || f.endsWith('.yml')) && !f.startsWith('.') && !f.startsWith('_')
       );
@@ -87,7 +73,7 @@ export async function GET() {
 
     // Feature specs
     let featureSpecs: any[] = [];
-    if (existsSync(FEATURES_DIR)) {
+    if (FEATURES_DIR && existsSync(FEATURES_DIR)) {
       const featureFiles = readdirSync(FEATURES_DIR).filter(
         (f) => (f.endsWith('.yaml') || f.endsWith('.yml')) && !f.startsWith('.') && !f.startsWith('_')
       );
@@ -116,5 +102,99 @@ export async function GET() {
     return NextResponse.json({ specs, featureSpecs, source });
   } catch {
     return NextResponse.json({ specs: [], featureSpecs: [], source: 'error', error: 'specs directory not found' });
+  }
+}
+
+/**
+ * POST /api/specs — Create a new spec file
+ * Body: { name: string, content?: string }
+ */
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+    const { name, content } = body;
+
+    if (!name || typeof name !== 'string') {
+      return NextResponse.json({ error: 'name is required' }, { status: 400 });
+    }
+
+    // Derive slug from name
+    const slug = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_|_$/g, '');
+
+    const filename = `${slug.replace(/_/g, '-')}.yaml`;
+
+    // Resolve target directory
+    const { apps: targetDir } = getSpecsDirs();
+
+    if (!targetDir) {
+      return NextResponse.json(
+        { error: 'No active project. Connect a project first from the Projects page.' },
+        { status: 400 }
+      );
+    }
+
+
+    // Ensure directory exists
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    mkdirSync(targetDir, { recursive: true });
+
+    const filePath = join(targetDir, filename);
+
+    // Don't overwrite existing
+    if (existsSync(filePath)) {
+      return NextResponse.json(
+        { error: `Spec already exists: ${filename}` },
+        { status: 409 }
+      );
+    }
+
+    // Use custom content or generate template
+    const specContent = content || `metadata:
+  name: "${name}"
+  slug: "${slug}"
+  description: "A ${name.toLowerCase()} application"
+  icon: "📦"
+  color: "#6366f1"
+  status: ready
+
+deployment:
+  port: 3050
+  region: us-central1
+
+database:
+  collections:
+    - items
+  databaseId: ${slug}-db
+
+api:
+  resources:
+    - name: Item
+      collection: items
+      fields:
+        name:
+          type: string
+          required: true
+        description:
+          type: string
+        status:
+          type: string
+          default: active
+`;
+
+    writeFileSync(filePath, specContent, 'utf-8');
+
+    return NextResponse.json({
+      success: true,
+      file: filename,
+      path: filePath,
+    });
+  } catch (err: any) {
+    return NextResponse.json(
+      { error: err.message || 'Failed to create spec' },
+      { status: 500 }
+    );
   }
 }

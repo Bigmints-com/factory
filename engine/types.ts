@@ -36,7 +36,7 @@ export interface DeploymentConfig {
 }
 
 export interface DatabaseConfig {
-    firestoreId: string;
+    databaseId: string;
     collections: string[];
 }
 

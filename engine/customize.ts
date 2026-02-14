@@ -9,6 +9,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import type { AppSpec, ResourceDefinition } from './types.ts';
 import { writeFile, slugToPascalCase, capitalize, log } from './utils.ts';
+import { getActiveProject } from './projects.ts';
 
 /**
  * Apply all customizations to a scaffolded app.
@@ -68,7 +69,10 @@ function customizePackageJson(outputDir: string, spec: AppSpec): void {
 }
 
 function customizeAppConfig(outputDir: string, spec: AppSpec): void {
-    const config = {
+    const project = getActiveProject();
+    const stack = project.stack || { database: 'firestore', cloud: 'gcp' };
+
+    const config: any = {
         metadata: {
             name: spec.metadata.name,
             displayName: spec.metadata.name,
@@ -85,29 +89,41 @@ function customizeAppConfig(outputDir: string, spec: AppSpec): void {
             customDomain: spec.deployment.customDomain || `${spec.metadata.slug}.saveaday.ai`,
             port: spec.deployment.port,
         },
-        firestore: {
-            databaseId: spec.database.firestoreId,
-            collections: spec.database.collections,
-        },
         routes: {
             public: ['/api/public/*', '/embed/*'],
             protected: ['/dashboard/*', `/${spec.api.resources[0]?.collection || 'items'}/*`, '/settings/*'],
         },
     };
 
+    if (stack.database === 'firestore') {
+        config.firestore = {
+            databaseId: spec.database.databaseId,
+            collections: spec.database.collections,
+        };
+    }
+
     writeFile(join(outputDir, 'app.config.json'), JSON.stringify(config, null, 4) + '\n');
 }
 
 function customizeEnvExample(outputDir: string, spec: AppSpec): void {
-    const content = `# ${spec.metadata.name} - Environment Variables
+    const project = getActiveProject();
+    const stack = project.stack || { database: 'firestore', cloud: 'gcp' };
+
+    let content = `# ${spec.metadata.name} - Environment Variables
 # Copy this to .env.local and fill in values
 
-# Firebase
+`;
+
+    if (stack.database === 'firestore') {
+        content += `# Firebase
 FIREBASE_PROJECT_ID=dvizfb
-FIRESTORE_DATABASE_ID=${spec.database.firestoreId}
+FIRESTORE_DATABASE_ID=${spec.database.databaseId}
 GOOGLE_APPLICATION_CREDENTIALS=./creds/serviceAccountKey.json
 
-# Auth
+`;
+    }
+
+    content += `# Auth
 NEXTAUTH_SECRET=generate-a-random-secret-here
 NEXTAUTH_URL=http://localhost:${spec.deployment.port}
 SSO_AUTH_URL=http://localhost:3010
@@ -382,8 +398,15 @@ ${typeBlocks.join('\n\n')}
 }
 
 function generateDeployScript(outputDir: string, spec: AppSpec): void {
+    const project = getActiveProject();
+    const stack = project.stack || { database: 'firestore', cloud: 'gcp' };
+
+    let envVars = stack.database === 'firestore' 
+        ? `API_URL=https://api.saveaday.ai,FIRESTORE_DATABASE_ID=${spec.database.databaseId}`
+        : `API_URL=https://api.saveaday.ai`;
+
     const content = `#!/bin/bash
-# Deploy ${spec.metadata.name} to Cloud Run
+# Deploy ${spec.metadata.name} to ${stack.cloud === 'gcp' ? 'Cloud Run' : stack.cloud || 'Cloud'}
 set -e
 
 # Resolve project root
@@ -408,7 +431,7 @@ docker build \\
 # Push to GCR
 docker push "$IMAGE"
 
-# Deploy to Cloud Run
+# Deploy to ${stack.cloud === 'gcp' ? 'Cloud Run' : stack.cloud || 'Cloud'}
 gcloud run deploy "$SERVICE_NAME" \\
     --image "$IMAGE" \\
     --project "$PROJECT_ID" \\
@@ -416,7 +439,7 @@ gcloud run deploy "$SERVICE_NAME" \\
     --platform managed \\
     --allow-unauthenticated \\
     --port 8080 \\
-    --set-env-vars "API_URL=https://api.saveaday.ai,FIRESTORE_DATABASE_ID=${spec.database.firestoreId}"
+    --set-env-vars "${envVars}"
 
 echo "✅ Deployed to https://${spec.deployment.customDomain || spec.metadata.slug + '.saveaday.ai'}"
 `;
