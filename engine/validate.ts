@@ -132,8 +132,8 @@ export function validateSpec(spec: AppSpec): ValidationResult {
  * @param slug - App slug (output directory name)
  * @returns Validation result
  */
-export function validateOutput(slug: string): ValidationResult {
-    const outputDir = resolve(PATHS.output, slug);
+export function validateOutput(slug: string, customOutputDir?: string): ValidationResult {
+    const outputDir = customOutputDir || resolve(PATHS.output, slug);
     const checks: ValidationCheck[] = [];
 
     // 1. Output exists

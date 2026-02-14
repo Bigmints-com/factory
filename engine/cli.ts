@@ -35,6 +35,7 @@ import { syncFromRepo } from './sync.ts';
 import { generateWithLLM } from './llm-generate.ts';
 import { PATHS, loadSpec, log } from './utils.ts';
 import { validateFeatureSpec, printFeatureValidation } from './feature-validate.ts';
+import { loadProjects } from './projects.ts';
 import { scaffoldFeature, generateFeatureReport } from './feature-scaffold.ts';
 import { initBridge } from './bridge.ts';
 import { addProject, removeProject, listProjects, setActiveProject } from './projects.ts';
@@ -220,6 +221,24 @@ async function handleBuild(specPath?: string): Promise<void> {
     console.log('═'.repeat(50));
     console.log('');
 
+    // Resolve target directory: active project repo, or fallback to output/<slug>/
+    const projectsConfig = loadProjects();
+    let targetDir: string | undefined;
+    if (projectsConfig.activeProject) {
+        const activeProject = projectsConfig.projects.find(
+            p => p.id === projectsConfig.activeProject
+        );
+        if (activeProject) {
+            targetDir = activeProject.path;
+            log('→', `Target project: ${activeProject.name} (${activeProject.path})`);
+        }
+    }
+    if (!targetDir) {
+        targetDir = resolve(PATHS.output, spec.metadata.slug);
+        log('→', `No active project — writing to output/${spec.metadata.slug}/`);
+    }
+    console.log('');
+
     // Step 1: Validate spec
     log('●', '[1/4] Validating spec...');
     const specValidation = validateSpec(spec);
@@ -237,14 +256,14 @@ async function handleBuild(specPath?: string): Promise<void> {
 
     if (hasTemplate) {
         log('●', '[2/4] Scaffolding from template...');
-        outputDir = scaffoldApp(spec);
+        outputDir = scaffoldApp(spec, targetDir);
         console.log('');
 
         log('●', '[3/4] Customizing app...');
         customizeApp(outputDir, spec);
     } else {
         log('●', '[2/4] Generating app with AI...');
-        const result = await generateWithLLM(spec);
+        const result = await generateWithLLM(spec, targetDir);
         outputDir = result.outputDir;
         log('✓', `Generated ${result.files.length} files using ${result.provider}/${result.model}`);
         console.log('');
@@ -255,7 +274,7 @@ async function handleBuild(specPath?: string): Promise<void> {
 
     // Step 4: Generate report
     log('●', '[4/4] Generating report...');
-    const outputValidation = validateOutput(spec.metadata.slug);
+    const outputValidation = validateOutput(spec.metadata.slug, outputDir);
     const combined = {
         passed: outputValidation.passed && specValidation.passed,
         checks: [...specValidation.checks, ...outputValidation.checks],
@@ -270,9 +289,9 @@ async function handleBuild(specPath?: string): Promise<void> {
     } else {
         log('!', `BUILD COMPLETE WITH WARNINGS: ${spec.metadata.name}`);
     }
-    log('→', `Output: output/${spec.metadata.slug}/`);
+    log('→', `Output: ${outputDir}`);
     if (hasTemplate) {
-        log('→', `Patches: output/${spec.metadata.slug}/patches/`);
+        log('→', `Patches: ${outputDir}/patches/`);
     }
     log('→', `Report: reports/${spec.metadata.slug}-*.md`);
     console.log('');

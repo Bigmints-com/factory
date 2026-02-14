@@ -19,7 +19,7 @@ const SKIP = new Set(['.next', 'node_modules', 'dist', '.turbo', '.env.local', '
  * @param spec - The parsed app spec
  * @returns Path to the scaffolded output directory
  */
-export function scaffoldApp(spec: AppSpec): string {
+export function scaffoldApp(spec: AppSpec, targetDir?: string): string {
     const templateDir = resolve(PATHS.templates, 'starter');
 
     if (!existsSync(templateDir)) {
@@ -29,7 +29,7 @@ export function scaffoldApp(spec: AppSpec): string {
         );
     }
 
-    const outputDir = resolve(PATHS.output, spec.metadata.slug);
+    const outputDir = targetDir || resolve(PATHS.output, spec.metadata.slug);
 
     // Clean previous output if exists
     if (existsSync(outputDir)) {

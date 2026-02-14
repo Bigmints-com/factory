@@ -312,7 +312,10 @@ export function parseGeneratedFiles(raw: string): GeneratedFile[] {
 /**
  * Generate a full app using the configured LLM provider.
  */
-export async function generateWithLLM(spec: AppSpec): Promise<GenerationResult> {
+export async function generateWithLLM(
+    spec: AppSpec,
+    targetDir?: string,
+): Promise<GenerationResult> {
     const { provider, model } = getActiveProvider();
 
     log('●', `Using ${provider.name} → ${model}`);
@@ -336,8 +339,8 @@ export async function generateWithLLM(spec: AppSpec): Promise<GenerationResult> 
     }
     log('✓', `Parsed ${generatedFiles.length} files from response`);
 
-    // Write to output
-    const outputDir = resolve(PATHS.output, spec.metadata.slug);
+    // Write to target directory (project repo) or fallback to output/
+    const outputDir = targetDir || resolve(PATHS.output, spec.metadata.slug);
     ensureDir(outputDir);
 
     const writtenFiles: string[] = [];
