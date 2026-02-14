@@ -1,13 +1,10 @@
-/**
- * Spec loading and validation.
- * Loads YAML specs from .factory/specs/ and validates them.
- */
-
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
+import { resolve, join, basename, dirname } from 'node:path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
-import type { AppSpec, FeatureSpec, SpecStatus, ValidationResult } from './types.ts';
+import type { AppSpec, FeatureSpec, SpecStatus, BuildMeta, ValidationResult } from './types.ts';
 import { specSlug, specPort } from './types.ts';
+import { log } from './log.ts';
+import { execSync } from 'node:child_process';
 
 // ─── Load ────────────────────────────────────────────────
 
@@ -135,3 +132,101 @@ export function updateSpecStatus(specPath: string, status: SpecStatus): void {
     spec.status = status;
     writeFileSync(absPath, stringifyYaml(spec, { lineWidth: 120 }));
 }
+
+// ─── Build Metadata Writeback ────────────────────────────
+
+/**
+ * Write build results back into the spec YAML.
+ * Records: lastBuiltAt, buildCount, outputDir, commitHash, filesGenerated, iterations, taskType.
+ */
+export function updateSpecBuildMeta(
+    specPath: string,
+    meta: Omit<BuildMeta, 'buildCount' | 'lastBuiltAt'>,
+    repoPath?: string,
+): void {
+    const absPath = resolve(specPath);
+    if (!existsSync(absPath)) return;
+
+    const raw = readFileSync(absPath, 'utf-8');
+    const spec = parseYaml(raw);
+
+    // Increment build count
+    const prevCount = spec.build?.buildCount ?? 0;
+
+    // Try to get the latest commit hash
+    let commitHash = meta.commitHash;
+    if (!commitHash && repoPath && existsSync(join(repoPath, '.git'))) {
+        try {
+            commitHash = execSync('git rev-parse --short HEAD', {
+                cwd: repoPath,
+                stdio: 'pipe',
+            }).toString().trim();
+        } catch {
+            // ignore — commitHash stays undefined
+        }
+    }
+
+    spec.build = {
+        lastBuiltAt: new Date().toISOString(),
+        buildCount: prevCount + 1,
+        outputDir: meta.outputDir,
+        commitHash,
+        filesGenerated: meta.filesGenerated,
+        iterations: meta.iterations,
+        taskType: meta.taskType,
+    };
+
+    writeFileSync(absPath, stringifyYaml(spec, { lineWidth: 120 }));
+    log('✓', `Build metadata written to spec (build #${spec.build.buildCount})`);
+}
+
+// ─── Archive Spec ────────────────────────────────────────
+
+/**
+ * Move a completed spec from specs/apps/ to specs/done/.
+ * Creates the done/ directory if it doesn't exist.
+ * Returns the new path, or null if the spec couldn't be moved.
+ */
+export function archiveSpec(specPath: string): string | null {
+    const absPath = resolve(specPath);
+    if (!existsSync(absPath)) return null;
+
+    const specsDir = dirname(absPath);
+    const parentDir = dirname(specsDir); // .factory/specs
+    const doneDir = join(parentDir, 'done');
+
+    // Only archive if the spec is in an apps/ or features/ folder
+    const folderName = basename(specsDir);
+    if (folderName !== 'apps' && folderName !== 'features') {
+        log('!', `Spec not in apps/ or features/ — skipping archive`);
+        return null;
+    }
+
+    // Create done/ directory
+    if (!existsSync(doneDir)) {
+        mkdirSync(doneDir, { recursive: true });
+    }
+
+    const filename = basename(absPath);
+    const destPath = join(doneDir, filename);
+
+    // If a file with the same name already exists in done/, add a timestamp suffix
+    let finalDest = destPath;
+    if (existsSync(destPath)) {
+        const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const ext = filename.includes('.') ? filename.slice(filename.lastIndexOf('.')) : '';
+        const base = filename.includes('.') ? filename.slice(0, filename.lastIndexOf('.')) : filename;
+        finalDest = join(doneDir, `${base}-${ts}${ext}`);
+    }
+
+    try {
+        renameSync(absPath, finalDest);
+        log('✓', `Archived spec → ${finalDest}`);
+        return finalDest;
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log('!', `Failed to archive spec: ${msg}`);
+        return null;
+    }
+}
+

@@ -17,7 +17,7 @@
 
 import { resolve, basename } from 'node:path';
 import { existsSync } from 'node:fs';
-import { loadSpec, loadFeatureSpec, listSpecs, validateSpec, validateFeatureSpec, updateSpecStatus } from './spec.ts';
+import { loadSpec, loadFeatureSpec, listSpecs, validateSpec, validateFeatureSpec, updateSpecStatus, updateSpecBuildMeta, archiveSpec } from './spec.ts';
 import { loadProjects, getActiveProject, addProject, removeProject, switchProject, loadBridgeConfig } from './config.ts';
 import { gatherContext } from './context.ts';
 import { runPipeline, runFeaturePipeline } from './generate.ts';
@@ -106,6 +106,17 @@ async function handleBuild(specPath?: string): Promise<void> {
     logStep(7, 7, 'Committing and pushing...');
     gitCommit(project.path, `factory: generate ${spec.appName}`);
     gitPush(project.path);
+
+    // Step 8: Write build metadata back into spec + archive
+    updateSpecBuildMeta(specPath!, {
+        outputDir: targetDir,
+        filesGenerated: result.files.length,
+        iterations: result.iterations,
+        taskType: result.plan.decisions[0] || 'unknown',
+    }, project.path);
+    if (result.success) {
+        archiveSpec(specPath!);
+    }
 
     // Summary
     console.log('');
@@ -549,6 +560,15 @@ async function handleQueueStart(): Promise<void> {
                         logBuild(current.specFile, 'AppSpec', 'completed', fileNames, `${result.files.length} files, ${result.iterations} iteration(s)`, durationMs);
                         updateSpecStatus(current.specFile, 'done');
                         gitCommit(project.path, `factory: generate ${spec.appName}`);
+
+                        // Write build metadata + archive spec
+                        updateSpecBuildMeta(current.specFile, {
+                            outputDir: targetDir,
+                            filesGenerated: result.files.length,
+                            iterations: result.iterations,
+                            taskType: result.plan.decisions[0] || 'unknown',
+                        }, project.path);
+                        archiveSpec(current.specFile);
                         succeeded++;
                     } else {
                         markFailed(

@@ -18,6 +18,18 @@ export interface AppSpec {
     pages?: PagesConfig;
     deployment?: DeploymentConfig;
     status?: SpecStatus;
+    build?: BuildMeta;
+}
+
+/** Build metadata written back into the spec after a successful build */
+export interface BuildMeta {
+    lastBuiltAt: string;       // ISO timestamp
+    buildCount: number;        // incremented each build
+    outputDir: string;         // where files were written
+    commitHash?: string;       // git commit hash if available
+    filesGenerated: number;    // count of files
+    iterations: number;        // how many LLM iterations
+    taskType: string;          // from the task classifier
 }
 
 export interface StackConfig {
