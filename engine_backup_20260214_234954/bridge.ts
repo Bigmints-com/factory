@@ -16,16 +16,32 @@ import { ProjectStack } from './projects.ts';
 
 // ─── Types ────────────────────────────────────────────────
 
+export interface SkillsConfig {
+    discovery?: 'auto' | 'manual';
+    files?: string[];  // e.g. ['agents.md', 'skills.md']
+    // Legacy format: array of { app, path }
+    [key: string]: any;
+}
+
 export interface BridgeConfig {
     version: number;
     name: string;
     description: string;
+    namespace?: string;    // e.g. '@myorg' — package scope prefix
+    projectId?: string;    // e.g. 'my-project' — cloud project ID
     stack?: ProjectStack;
     registry?: { apps?: string };
     conventions?: { rules?: string; agents?: string };
-    skills?: Array<{ app: string; path: string }>;
+    skills?: SkillsConfig | Array<{ app: string; path: string }>;
     templates?: { starter?: string };
     apps_dir?: string;
+}
+
+export interface KnowledgeFile {
+    app: string;
+    filename: string;
+    path: string;
+    content: string;
 }
 
 // Files to look for when auto-discovering skills
@@ -101,6 +117,47 @@ export function loadBridgeConfig(repoPath: string): BridgeConfig {
 }
 
 /**
+ * Discover all knowledge files (agents.md, skills.md) from the repo's apps.
+ * This is the runtime function the engine calls when building context.
+ */
+export function discoverKnowledgeFiles(repoPath: string): KnowledgeFile[] {
+    const config = loadBridgeConfig(repoPath);
+    const appsDir = config.apps_dir || 'apps';
+    const appsDirPath = join(repoPath, appsDir);
+    const knowledgeFiles: KnowledgeFile[] = [];
+
+    if (!existsSync(appsDirPath)) return knowledgeFiles;
+
+    // Determine which filenames to scan for
+    let filenames = SKILL_FILENAMES;
+    const skills = config.skills;
+    if (skills && !Array.isArray(skills) && skills.discovery === 'auto' && skills.files) {
+        filenames = skills.files;
+    }
+
+    // Scan all app directories
+    const appDirs = readdirSync(appsDirPath, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .map(d => d.name);
+
+    for (const appName of appDirs) {
+        for (const filename of filenames) {
+            const filePath = join(appsDirPath, appName, filename);
+            if (existsSync(filePath)) {
+                knowledgeFiles.push({
+                    app: appName,
+                    filename,
+                    path: filePath,
+                    content: readFileSync(filePath, 'utf-8'),
+                });
+            }
+        }
+    }
+
+    return knowledgeFiles;
+}
+
+/**
  * Check whether a repo already has a .factory bridge.
  */
 export function hasBridge(repoPath: string): boolean {
@@ -127,7 +184,7 @@ function writeAgentsMd(factoryDir: string, projectName: string): void {
     const content = `# .factory — Agent Instructions
 
 > This folder is the bridge between the **${projectName}** repo and the
-> **SaveADay Factory** engine. Everything here is machine-readable.
+> **Factory** engine. Everything here is machine-readable.
 
 ## Folder Structure
 
@@ -170,39 +227,52 @@ Each YAML file describes a **complete application** to generate.
 ### Required Structure
 
 \`\`\`yaml
-apiVersion: saveaday/v1
-kind: AppSpec
+appName: My App
+description: Short description of the app
 status: draft              # draft | ready | in-progress | done
 
-metadata:
-  name: My App
-  slug: my_app             # Unique, snake_case
-  description: Short description
-  icon: Sparkles           # Lucide icon name
-  color: "#6366f1"
-  group: superapp           # superapp | infrastructure | independent
+stack:
+  framework: next.js
+  packageManager: pnpm
+  language: typescript
+  database: supabase       # supabase | postgres | mongodb | firestore | sqlite | none
+  cloud: gcp               # gcp | aws | vercel | none
 
-deployment:
-  port: 3020               # Unique port number
-  region: us-central1
+frontend:
+  ui: shadcn/ui
+  theme: dark
+  icons: lucide
+  fonts: [Inter]
 
-database:
-  databaseId: my-app
-  collections: [items]
+layout:
+  sidebar: true
+  topbar: true
 
-api:
-  resources:
-    - name: item
-      collection: items
+auth:
+  provider: nextauth
+  methods:
+    email: true
+    google: true
+
+data:
+  tables:
+    - name: items
       fields:
         title: { type: string, required: true }
-        status: { type: string, default: "active" }
+        status: { type: string }
+        description: { type: string }
+
+pages:
+  dashboard:
+    - Overview with key metrics
+  crud:
+    - table: items
 \`\`\`
 
 ### Field Types
 
-Allowed types: \`string\`, \`number\`, \`boolean\`, \`array\`, \`object\`.
-Each field can have \`required\` (boolean) and \`default\` (any).
+Allowed types: \`string\`, \`number\`, \`boolean\`, \`array\`, \`object\`, \`datetime\`.
+Each field can have \`required\` (boolean), \`default\` (any), and \`description\` (string).
 
 ## Writing Feature Specs (\`specs/features/\`)
 
@@ -215,7 +285,7 @@ Same conventions as app specs: kebab-case, \`_\` prefix for templates.
 ### Required Structure
 
 \`\`\`yaml
-apiVersion: saveaday/v1
+apiVersion: factory/v1
 kind: FeatureSpec
 status: draft
 
@@ -262,6 +332,12 @@ function discoverBridgeConfig(repoPath: string): BridgeConfig {
         name: guessRepoName(repoPath),
         description: '',
     };
+
+    // 0. Namespace — derive from root package.json scope
+    config.namespace = guessNamespace(repoPath);
+    if (config.namespace) {
+        log('  ', `  ✓ Namespace: ${config.namespace}`);
+    }
 
     // 1. Registry — look for apps.json
     if (existsSync(join(repoPath, 'apps.json'))) {
@@ -315,18 +391,53 @@ function discoverBridgeConfig(repoPath: string): BridgeConfig {
         log('  ', '  ✓ Found apps/starter template');
     }
 
-    // 5. Stack discovery
+    // 5. Stack discovery — detect, don't assume
+    const packageManager = existsSync(join(repoPath, 'pnpm-lock.yaml')) ? 'pnpm'
+        : existsSync(join(repoPath, 'yarn.lock')) ? 'yarn'
+        : existsSync(join(repoPath, 'package-lock.json')) ? 'npm'
+        : 'npm';
+
+    const hasNextConfig = existsSync(join(repoPath, 'next.config.js'))
+        || existsSync(join(repoPath, 'next.config.ts'))
+        || existsSync(join(repoPath, 'next.config.mjs'));
+
+    const framework = hasNextConfig ? 'next.js' : undefined;
+
+    const linter = (existsSync(join(repoPath, '.eslintrc.json')) || existsSync(join(repoPath, 'eslint.config.mjs')))
+        ? 'eslint' : undefined;
+
+    const testing = (existsSync(join(repoPath, 'jest.config.js')) || existsSync(join(repoPath, 'jest.config.ts')))
+        ? 'jest' : undefined;
+
+    // Detect database from config files
+    const database = existsSync(join(repoPath, 'firebase.json')) ? 'firestore'
+        : existsSync(join(repoPath, 'prisma')) ? 'postgres'
+        : undefined;
+
+    // Detect cloud from config files
+    const cloud = existsSync(join(repoPath, 'firebase.json')) ? 'gcp'
+        : existsSync(join(repoPath, 'vercel.json')) ? 'vercel'
+        : existsSync(join(repoPath, 'serverless.yml')) ? 'aws'
+        : undefined;
+
     config.stack = {
-        framework: 'next.js', // Default since most our projects use it
-        packageManager: existsSync(join(repoPath, 'package-lock.json')) ? 'npm' : (existsSync(join(repoPath, 'yarn.lock')) ? 'yarn' : (existsSync(join(repoPath, 'pnpm-lock.yaml')) ? 'pnpm' : 'npm')),
-        linter: existsSync(join(repoPath, '.eslintrc.json')) || existsSync(join(repoPath, 'eslint.config.mjs')) ? 'EsLint' : 'None',
-        testing: existsSync(join(repoPath, 'jest.config.js')) || existsSync(join(repoPath, 'jest.config.ts')) ? 'jest' : 'None',
-        database: 'firestore', // Default
-        cloud: 'gcp',         // Default
+        framework: framework || '',
+        packageManager,
+        linter: linter || '',
+        testing: testing || '',
+        database: database || '',
+        cloud: cloud || '',
     };
 
-    if (existsSync(join(repoPath, 'next.config.js')) || existsSync(join(repoPath, 'next.config.ts')) || existsSync(join(repoPath, 'next.config.mjs'))) {
-        config.stack.framework = 'next.js';
+    // 6. Cloud project ID — detect from firebase config or environment
+    if (database === 'firestore' && existsSync(join(repoPath, '.firebaserc'))) {
+        try {
+            const firebaserc = JSON.parse(readFileSync(join(repoPath, '.firebaserc'), 'utf-8'));
+            if (firebaserc.projects?.default) {
+                config.projectId = firebaserc.projects.default;
+                log('  ', `  ✓ Project ID: ${config.projectId}`);
+            }
+        } catch { /* ignore */ }
     }
 
     return config;
@@ -343,4 +454,21 @@ function guessRepoName(repoPath: string): string {
     }
     // Fall back to directory name
     return repoPath.split('/').pop() || 'unknown';
+}
+
+/**
+ * Guess the package namespace from root package.json.
+ * e.g. '@myorg/root' → '@myorg', 'my-project' → undefined
+ */
+function guessNamespace(repoPath: string): string | undefined {
+    const pkgPath = join(repoPath, 'package.json');
+    if (!existsSync(pkgPath)) return undefined;
+    try {
+        const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+        const name = pkg.name as string;
+        if (name?.startsWith('@') && name.includes('/')) {
+            return name.split('/')[0];
+        }
+    } catch { /* ignore */ }
+    return undefined;
 }

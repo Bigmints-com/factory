@@ -1,0 +1,84 @@
+# ─── App Spec Template ────────────────────────────────────
+# This is the schema the Factory engine uses to build apps.
+# Copy this file, fill in your values, and run: factory build <file>
+
+appName: "My App"
+description: "A short description of what this app does"
+starter: "" # optional: starter template name
+
+# ─── Stack ────────────────────────────────────────────────
+stack:
+  framework: next.js # next.js | remix | vite | astro
+  packageManager: pnpm # pnpm | npm | yarn
+  language: typescript # typescript | javascript
+  linter: eslint # eslint | biome | none
+  testing: jest # jest | vitest | none
+  database: supabase # supabase | postgres | mongodb | firestore | sqlite | none
+  cloud: gcp # gcp | aws | vercel | none
+
+# ─── Frontend ────────────────────────────────────────────
+frontend:
+  ui: shadcn/ui # shadcn/ui | tailwind | material-ui | chakra | none
+  theme: dark/light # dark | light | dark/light
+  icons: lucide # lucide | heroicons | phosphor | none
+  fonts:
+    - Inter
+    - "JetBrains Mono"
+
+# ─── Layout ──────────────────────────────────────────────
+layout:
+  sidebar: true
+  topbar: true
+  bottombar: false
+  footer: false
+
+# ─── Authentication ──────────────────────────────────────
+auth:
+  provider: firebase # firebase | nextauth | supabase | clerk | none
+  methods:
+    email: true
+    google: true
+    github: false
+    apple: false
+    phone: false
+  pages:
+    login: true
+    signup: true
+    forgotPassword: true
+
+# ─── Data ────────────────────────────────────────────────
+# Define your data models. Works for SQL tables or NoSQL collections.
+data:
+  tables:
+    - name: items
+      fields:
+        title: { type: string, required: true }
+        description: { type: string }
+        status: { type: string, default: "active" }
+        priority: { type: number, default: 0 }
+        ownerId: { type: string, required: true }
+        createdAt: { type: datetime }
+        updatedAt: { type: datetime }
+
+    # - name: categories
+    #   fields:
+    #     name: { type: string, required: true }
+    #     slug: { type: string, required: true }
+
+# ─── Pages ───────────────────────────────────────────────
+# Describe the pages you want. Use natural language — the engine
+# will generate the right components, routes, and data-fetching.
+pages:
+  dashboard:
+    - "an overview page with key metrics and recent activity"
+    - "a settings page for user preferences"
+  crud:
+    - table: items # auto-generates list, detail, create, edit pages
+  custom: []
+    # - "a public landing page with hero, features, and pricing"
+    # - "an analytics page with charts showing usage over time"
+
+# ─── Deployment (optional) ───────────────────────────────
+deployment:
+  port: 3000
+  region: us-central1

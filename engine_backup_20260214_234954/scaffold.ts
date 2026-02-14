@@ -8,6 +8,7 @@
 import { cpSync, existsSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import type { AppSpec } from './types.ts';
+import { specSlug } from './types.ts';
 import { PATHS, ensureDir, log } from './utils.ts';
 
 /** Files/directories to skip when copying the template */
@@ -29,7 +30,7 @@ export function scaffoldApp(spec: AppSpec, targetDir?: string): string {
         );
     }
 
-    const outputDir = targetDir || resolve(PATHS.output, spec.metadata.slug);
+    const outputDir = targetDir || resolve(PATHS.output, specSlug(spec));
 
     // Clean previous output — preserve project-specific dirs (.factory, .git, node_modules)
     const PRESERVE = new Set(['.factory', '.git', 'node_modules', '.gitignore']);
@@ -48,7 +49,7 @@ export function scaffoldApp(spec: AppSpec, targetDir?: string): string {
     // Copy template files, skipping ignored items
     copyTemplate(templateDir, outputDir);
 
-    log('✓', `Scaffolded ${spec.metadata.slug} at ${outputDir}`);
+    log('✓', `Scaffolded ${specSlug(spec)} at ${outputDir}`);
     return outputDir;
 }
 

@@ -6,7 +6,9 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import Ajv from 'ajv';
 import type { AppSpec, ValidationResult, ValidationCheck } from './types.ts';
+import { specSlug, specPort } from './types.ts';
 import { PATHS, loadRegistry, log } from './utils.ts';
+import { getActiveBridgeConfig } from './projects.ts';
 
 /**
  * Validate a spec YAML against the JSON schema.
@@ -16,6 +18,8 @@ import { PATHS, loadRegistry, log } from './utils.ts';
  */
 export function validateSpec(spec: AppSpec): ValidationResult {
     const checks: ValidationCheck[] = [];
+    const slug = specSlug(spec);
+    const port = specPort(spec);
 
     // 1. Schema validation
     const schemaPath = resolve(PATHS.schemas, 'app-spec.schema.json');
@@ -39,86 +43,80 @@ export function validateSpec(spec: AppSpec): ValidationResult {
         });
     }
 
-    // 2. Required fields — allow underscores in slug for LLM builds
+    // 2. Required fields
     checks.push({
-        name: 'Metadata slug format',
-        passed: /^[a-z][a-z0-9_-]*$/.test(spec.metadata.slug),
-        message: spec.metadata.slug
-            ? `Slug "${spec.metadata.slug}" is valid`
+        name: 'App name present',
+        passed: !!spec.appName && spec.appName.length > 0,
+        message: spec.appName
+            ? `App name: "${spec.appName}"`
+            : 'App name is missing',
+    });
+
+    checks.push({
+        name: 'Slug format valid',
+        passed: /^[a-z][a-z0-9_-]*$/.test(slug),
+        message: slug
+            ? `Slug "${slug}" is valid`
             : 'Slug is missing or invalid (must be lowercase alphanumeric with hyphens/underscores)',
     });
 
     checks.push({
-        name: 'At least one API resource',
-        passed: spec.api.resources.length > 0,
-        message: spec.api.resources.length > 0
-            ? `${spec.api.resources.length} resource(s) defined`
-            : 'No API resources defined',
+        name: 'Stack framework specified',
+        passed: !!spec.stack?.framework,
+        message: spec.stack?.framework
+            ? `Framework: ${spec.stack.framework}`
+            : 'No framework specified in stack',
     });
 
+    // 3. Data tables (optional but checked)
+    const tables = spec.data?.tables || [];
     checks.push({
-        name: 'At least one database collection',
-        passed: spec.database.collections.length > 0,
-        message: spec.database.collections.length > 0
-            ? `${spec.database.collections.length} collection(s) defined`
-            : 'No database collections defined',
+        name: 'Data tables defined',
+        passed: tables.length > 0,
+        message: tables.length > 0
+            ? `${tables.length} table(s) defined: ${tables.map(t => t.name).join(', ')}`
+            : 'No data tables defined (app will have no data layer)',
     });
 
-    // 3. Port range
-    checks.push({
-        name: 'Port in valid range',
-        passed: spec.deployment.port >= 3000 && spec.deployment.port <= 9999,
-        message: `Port ${spec.deployment.port} is ${spec.deployment.port >= 3000 && spec.deployment.port <= 9999 ? 'valid' : 'out of range (3000-9999)'}`,
-    });
+    // 4. Port range (if deployment specified)
+    if (spec.deployment?.port) {
+        checks.push({
+            name: 'Port in valid range',
+            passed: port >= 3000 && port <= 9999,
+            message: `Port ${port} is ${port >= 3000 && port <= 9999 ? 'valid' : 'out of range (3000-9999)'}`,
+        });
+    }
 
-    // 4. Check for conflicts with existing registry
+    // 5. Check for conflicts with existing registry
     try {
         const registry = loadRegistry();
 
-        const portConflict = registry.apps.find(a => a.port === spec.deployment.port);
-        checks.push({
-            name: 'No port conflict',
-            passed: !portConflict,
-            message: portConflict
-                ? `Port ${spec.deployment.port} already used by "${portConflict.name}"`
-                : `Port ${spec.deployment.port} is available`,
-        });
+        if (spec.deployment?.port) {
+            const portConflict = registry.apps.find(a => a.port === port);
+            checks.push({
+                name: 'No port conflict',
+                passed: !portConflict,
+                message: portConflict
+                    ? `Port ${port} already used by "${portConflict.name}"`
+                    : `Port ${port} is available`,
+            });
+        }
 
         const slugConflict = registry.apps.find(
-            a => a.path === `apps/${spec.metadata.slug}` || a.container === spec.metadata.slug
+            a => a.path === `apps/${slug}` || a.container === slug
         );
         checks.push({
             name: 'No slug conflict',
             passed: !slugConflict,
             message: slugConflict
-                ? `Slug "${spec.metadata.slug}" conflicts with existing app "${slugConflict.name}"`
-                : `Slug "${spec.metadata.slug}" is available`,
-        });
-
-        const dbConflict = registry.apps.find(a => a.database === spec.database.databaseId);
-        checks.push({
-            name: 'No database ID conflict',
-            passed: !dbConflict,
-            message: dbConflict
-                ? `Database ID "${spec.database.databaseId}" already used by "${dbConflict.name}"`
-                : `Database ID "${spec.database.databaseId}" is available`,
+                ? `Slug "${slug}" conflicts with existing app "${slugConflict.name}"`
+                : `Slug "${slug}" is available`,
         });
     } catch {
         checks.push({
             name: 'Registry conflict check',
             passed: true,
             message: 'No registry available — skipped (run factory sync to enable)',
-        });
-    }
-
-    // 5. Brand accent format
-    if (spec.metadata.brandAccent) {
-        checks.push({
-            name: 'Brand accent format',
-            passed: /^#[0-9a-fA-F]{6}$/.test(spec.metadata.brandAccent),
-            message: /^#[0-9a-fA-F]{6}$/.test(spec.metadata.brandAccent)
-                ? `Brand accent "${spec.metadata.brandAccent}" is valid hex`
-                : `Brand accent "${spec.metadata.brandAccent}" is not valid hex (expected #RRGGBB)`,
         });
     }
 
@@ -201,20 +199,20 @@ export function validateOutput(slug: string, customOutputDir?: string): Validati
             });
 
             if (isTemplateOutput) {
-                checks.push({
-                    name: 'package.json: name starts with @saveaday/',
-                    passed: pkg.name?.startsWith('@saveaday/'),
-                    message: `Name is "${pkg.name}"`,
-                });
+                // Check namespace prefix if configured
+                let namespace = '';
+                try {
+                    const bridge = getActiveBridgeConfig();
+                    namespace = bridge.namespace || '';
+                } catch { /* no active project */ }
 
-                const hasSharedDeps = ['@saveaday/shared-ui', '@saveaday/shared-auth'].every(
-                    dep => pkg.dependencies?.[dep]
-                );
-                checks.push({
-                    name: 'package.json: shared deps present',
-                    passed: hasSharedDeps,
-                    message: hasSharedDeps ? 'shared-ui and shared-auth found' : 'Missing shared dependencies',
-                });
+                if (namespace) {
+                    checks.push({
+                        name: `package.json: name starts with ${namespace}/`,
+                        passed: pkg.name?.startsWith(`${namespace}/`),
+                        message: `Name is "${pkg.name}"`,
+                    });
+                }
             }
         } catch {
             checks.push({
@@ -236,14 +234,6 @@ export function validateOutput(slug: string, customOutputDir?: string): Validati
                     name: 'app.config.json: has metadata',
                     passed: !!config.metadata?.slug,
                     message: config.metadata?.slug ? `Slug: ${config.metadata.slug}` : 'Missing slug',
-                });
-
-                checks.push({
-                    name: 'app.config.json: has database config',
-                    passed: !!(config.firestore?.databaseId || config.database?.databaseId),
-                    message: (config.firestore?.databaseId || config.database?.databaseId)
-                        ? `DB: ${config.firestore?.databaseId || config.database?.databaseId}`
-                        : 'Missing database config',
                 });
             } catch {
                 checks.push({

@@ -7,27 +7,13 @@
  */
 
 import { resolve } from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
 import type { AppSpec } from './types.ts';
-import { PATHS, ensureDir, writeFile, log, FACTORY_ROOT } from './utils.ts';
+import { specSlug, specPort } from './types.ts';
+import { PATHS, ensureDir, writeFile, log } from './utils.ts';
+import type { LLMProvider, FactorySettings } from './llm-config.ts';
+import { loadSettings, getActiveProvider } from './llm-config.ts';
 
 // ─── Types ────────────────────────────────────────────────
-
-interface LLMProvider {
-    id: string;
-    name: string;
-    enabled: boolean;
-    apiKey?: string;
-    baseUrl?: string;
-    models: { id: string; name: string }[];
-    defaultModel?: string;
-}
-
-interface FactorySettings {
-    providers: LLMProvider[];
-    activeProvider: string;
-    buildModel: string;
-}
 
 export interface GeneratedFile {
     filename: string;
@@ -44,19 +30,11 @@ export interface GenerationResult {
 
 // ─── Settings ─────────────────────────────────────────────
 
-const SETTINGS_FILE = resolve(FACTORY_ROOT, 'settings.json');
-
-function loadSettings(): FactorySettings {
-    if (!existsSync(SETTINGS_FILE)) {
-        throw new Error(
-            'No LLM model configured.\n' +
-            'Go to Settings in the Factory UI to configure a provider (Gemini, OpenAI, or Ollama).'
-        );
-    }
-    return JSON.parse(readFileSync(SETTINGS_FILE, 'utf-8'));
-}
-
-function getActiveProvider(): { provider: LLMProvider; model: string } {
+/**
+ * Require an active, enabled provider with a build model set.
+ * Throws with a user-friendly message if not configured.
+ */
+function requireActiveProvider(): { provider: LLMProvider; model: string } {
     const settings = loadSettings();
     if (!settings.activeProvider || !settings.buildModel) {
         throw new Error(
@@ -64,9 +42,7 @@ function getActiveProvider(): { provider: LLMProvider; model: string } {
             'Go to Settings → enable a provider → click "Set as Default".'
         );
     }
-    const provider = settings.providers.find(
-        p => p.id === settings.activeProvider && p.enabled
-    );
+    const provider = getActiveProvider(settings);
     if (!provider) {
         throw new Error(`Provider "${settings.activeProvider}" is not enabled.`);
     }
@@ -76,39 +52,81 @@ function getActiveProvider(): { provider: LLMProvider; model: string } {
 // ─── Prompt Builder ───────────────────────────────────────
 
 function buildPrompt(spec: AppSpec): string {
-    const resourceDefs = (spec.api?.resources || []).map(r => {
-        const fields = Object.entries(r.fields)
+    const slug = specSlug(spec);
+    const port = specPort(spec);
+    const tables = spec.data?.tables || [];
+
+    const tableDefs = tables.map(t => {
+        const fields = Object.entries(t.fields)
             .map(([name, def]) => `      ${name}: ${def.type}${def.required ? ' (required)' : ''}${def.default !== undefined ? ` [default: ${def.default}]` : ''}`)
             .join('\n');
-        return `    - ${r.name} (collection: ${r.collection})\n${fields}`;
+        return `    - ${t.name}\n${fields}`;
     }).join('\n');
+
+    const dashboardPages = spec.pages?.dashboard?.map(p => `    - ${p}`).join('\n') || '    - Overview with key metrics';
+    const customPages = spec.pages?.custom?.map(p => `    - ${p}`).join('\n') || '';
+    const crudTables = spec.pages?.crud?.map(c => c.table).join(', ') || tables.map(t => t.name).join(', ');
+
+    const layoutInfo = spec.layout
+        ? `- Sidebar: ${spec.layout.sidebar ? 'yes' : 'no'}\n- Topbar: ${spec.layout.topbar ? 'yes' : 'no'}\n- Bottombar: ${spec.layout.bottombar ? 'yes' : 'no'}`
+        : '- Include a navigation sidebar';
+
+    const uiLib = spec.frontend?.ui || 'tailwind';
+    const theme = spec.frontend?.theme || 'light';
+    const fonts = spec.frontend?.fonts?.join(', ') || 'Inter';
+
+    const authInfo = spec.auth
+        ? `- Auth provider: ${spec.auth.provider}\n- Methods: ${Object.entries(spec.auth.methods || {}).filter(([,v]) => v).map(([k]) => k).join(', ') || 'email'}\n- Pages: ${Object.entries(spec.auth.pages || {}).filter(([,v]) => v).map(([k]) => k).join(', ') || 'login, signup'}`
+        : '- No auth required';
 
     return `You are a senior full-stack developer. Generate a complete, production-ready Next.js 14+ application based on the following specification.
 
 ## Application Specification
 
-- **Name**: ${spec.metadata.name}
-- **Slug**: ${spec.metadata.slug}
-- **Description**: ${spec.metadata.description}
-- **Port**: ${spec.deployment.port}
-- **Color/Brand**: ${spec.metadata.color}
+- **Name**: ${spec.appName}
+- **Slug**: ${slug}
+- **Description**: ${spec.description}
+- **Port**: ${port}
+
+### Stack
+- Framework: ${spec.stack.framework}
+- Package Manager: ${spec.stack.packageManager}
+- Language: ${spec.stack.language || 'typescript'}
+- Database: ${spec.stack.database || 'none'}
+- Cloud: ${spec.stack.cloud || 'none'}
+
+### Frontend
+- UI Library: ${uiLib}
+- Theme: ${theme}
+- Fonts: ${fonts}
+
+### Layout
+${layoutInfo}
+
+### Authentication
+${authInfo}
 
 ### Data Model
-${resourceDefs || '    No resources defined.'}
+${tableDefs || '    No tables defined — use in-memory state.'}
+
+### Pages
+Dashboard pages:
+${dashboardPages}
+${crudTables ? `\nCRUD pages for: ${crudTables}` : ''}
+${customPages ? `\nCustom pages:\n${customPages}` : ''}
 
 ## Requirements
 
 1. Use **Next.js 14+ App Router** with TypeScript
-2. Use **Tailwind CSS** for styling
-3. Create a modern, beautiful UI with the brand color ${spec.metadata.color}
-4. Include a dashboard/home page showing a summary
-5. Include full CRUD pages for each resource (list, create, edit, delete)
+2. Use **${uiLib}** for styling
+3. Create a modern, beautiful UI with **${theme}** theme
+4. Use **${fonts}** font family
+5. Include full CRUD pages for each data table (list, create, edit, delete)
 6. Use **local state** (React useState/useReducer) for data storage — no external database needed
 7. Include proper TypeScript types for all models
-8. Include a layout with navigation sidebar
-9. Add a \`package.json\` with all necessary dependencies (next, react, typescript, tailwindcss, etc.)
-10. Add \`tsconfig.json\`, \`next.config.ts\`, \`tailwind.config.ts\`, and \`postcss.config.mjs\`
-11. The app should be fully functional out of the box with \`npm install && npm run dev\`
+8. Add a \`package.json\` with all necessary dependencies
+9. Add \`tsconfig.json\`, \`next.config.ts\`, and relevant config files
+10. The app should be fully functional out of the box with \`npm install && npm run dev\`
 
 ## Output Format
 
@@ -134,13 +152,11 @@ Generate ALL files needed for a working application. Include at minimum:
 - package.json
 - tsconfig.json
 - next.config.ts
-- tailwind.config.ts
-- postcss.config.mjs
-- src/app/layout.tsx (with sidebar navigation)
+- src/app/layout.tsx (with navigation)
 - src/app/page.tsx (dashboard)
-- src/app/globals.css (with Tailwind directives + custom styles)
-- Type definitions for each resource
-- CRUD pages for each resource
+- src/app/globals.css
+- Type definitions for each data table
+- CRUD pages for each table
 - A reusable data store (React context or simple state management)
 
 Do NOT include any explanatory text outside of the file delimiters. Output ONLY the files.`;
@@ -316,10 +332,11 @@ export async function generateWithLLM(
     spec: AppSpec,
     targetDir?: string,
 ): Promise<GenerationResult> {
-    const { provider, model } = getActiveProvider();
+    const slug = specSlug(spec);
+    const { provider, model } = requireActiveProvider();
 
     log('●', `Using ${provider.name} → ${model}`);
-    log('  ', `  Generating ${spec.metadata.name} (${spec.metadata.slug})...`);
+    log('  ', `  Generating ${spec.appName} (${slug})...`);
 
     // Build prompt
     const prompt = buildPrompt(spec);
@@ -340,7 +357,7 @@ export async function generateWithLLM(
     log('✓', `Parsed ${generatedFiles.length} files from response`);
 
     // Write to target directory (project repo) or fallback to output/
-    const outputDir = targetDir || resolve(PATHS.output, spec.metadata.slug);
+    const outputDir = targetDir || resolve(PATHS.output, slug);
     ensureDir(outputDir);
 
     const writtenFiles: string[] = [];

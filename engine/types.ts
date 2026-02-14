@@ -1,182 +1,250 @@
 /**
- * Shared types for the SaveADay Factory engine.
+ * Shared types for the Factory engine.
+ *
+ * Every type lives here — no local duplicates anywhere.
  */
 
-/** Status of a spec in the task queue */
-export type SpecStatus = 'draft' | 'ready' | 'in-progress' | 'validation' | 'review' | 'done';
+// ─── Spec Types ──────────────────────────────────────────
 
-/** Top-level app spec structure (parsed from YAML) */
+/** Top-level app spec (parsed from YAML in .factory/specs/apps/) */
 export interface AppSpec {
-    apiVersion: 'saveaday/v1';
-    kind: 'AppSpec';
-    status: SpecStatus;
-    metadata: AppMetadata;
-    deployment: DeploymentConfig;
-    database: DatabaseConfig;
-    api: ApiConfig;
-    features?: FeatureFlags;
-    publicPage?: PublicPageConfig;
-    acceptance?: string[];
-}
-
-export interface AppMetadata {
-    name: string;
-    slug: string;
+    appName: string;
     description: string;
-    icon: string;
-    color: string;
-    brandAccent?: string;
-    group: 'superapp' | 'infrastructure' | 'independent';
+    stack: StackConfig;
+    frontend?: FrontendConfig;
+    layout?: LayoutConfig;
+    auth?: AuthConfig;
+    data?: DataConfig;
+    pages?: PagesConfig;
+    deployment?: DeploymentConfig;
+    status?: SpecStatus;
 }
 
-export interface DeploymentConfig {
-    port: number;
-    region: string;
-    customDomain?: string;
+export interface StackConfig {
+    framework: string;
+    packageManager?: string;
+    language?: string;
+    linter?: string;
+    testing?: string;
+    database?: string;
+    cloud?: string;
 }
 
-export interface DatabaseConfig {
-    databaseId: string;
-    collections: string[];
+export interface FrontendConfig {
+    ui?: string;
+    theme?: string;
+    icons?: string;
+    fonts?: string[];
 }
 
-export interface ApiConfig {
-    resources: ResourceDefinition[];
+export interface LayoutConfig {
+    sidebar?: boolean;
+    topbar?: boolean;
+    bottombar?: boolean;
+    footer?: boolean;
 }
 
-export interface ResourceDefinition {
+export interface AuthConfig {
+    provider?: string;
+    methods?: {
+        email?: boolean;
+        google?: boolean;
+        github?: boolean;
+        apple?: boolean;
+        phone?: boolean;
+    };
+    pages?: {
+        login?: boolean;
+        signup?: boolean;
+        forgotPassword?: boolean;
+    };
+}
+
+export interface DataConfig {
+    tables?: TableDefinition[];
+}
+
+export interface TableDefinition {
     name: string;
-    collection: string;
-    searchFields?: string[];
     fields: Record<string, FieldDefinition>;
 }
 
 export interface FieldDefinition {
-    type: 'string' | 'number' | 'boolean' | 'array' | 'object';
+    type: string;
     required?: boolean;
-    default?: unknown;
+    default?: string | number | boolean;
     description?: string;
 }
 
-export interface FeatureFlags {
-    publicPage?: boolean;
-    connections?: boolean;
-    embed?: boolean;
+export interface PagesConfig {
+    dashboard?: string[];
+    crud?: Array<{ table: string }>;
+    custom?: string[];
 }
 
-export interface PublicPageConfig {
-    hero?: {
-        title: string;
-        subtitle: string;
+export interface DeploymentConfig {
+    port?: number;
+    region?: string;
+}
+
+export type SpecStatus = 'draft' | 'ready' | 'in-progress' | 'validation' | 'review' | 'done';
+
+// ─── Feature Spec ────────────────────────────────────────
+
+export interface FeatureSpec {
+    feature: {
+        name: string;
+        slug: string;
     };
-    features?: Array<{
-        icon: string;
+    target: {
+        app: string;
+    };
+    model?: {
+        collection: string;
+        fields: Array<{
+            name: string;
+            type: string;
+            required?: boolean;
+            default?: string | number | boolean;
+        }>;
+    };
+    pages?: Array<{
+        slug: string;
+        type: string;
         title: string;
-        description: string;
-    }>;
-    faqs?: Array<{
-        q: string;
-        a: string;
     }>;
 }
 
-/** Registry entry in apps.json */
-export interface AppRegistryEntry {
+// ─── Bridge Config (.factory/factory.yaml) ───────────────
+
+export interface BridgeConfig {
+    version: number;
+    name: string;
+    description: string;
+    namespace?: string;
+    projectId?: string;
+    stack?: ProjectStack;
+    registry?: { apps?: string };
+    conventions?: { rules?: string; agents?: string };
+    skills?: SkillsConfig;
+    templates?: { starter?: string };
+    apps_dir?: string;
+}
+
+export interface SkillsConfig {
+    discovery?: 'auto' | 'manual';
+    files?: string[];
+}
+
+export interface ProjectStack {
+    framework: string;
+    packageManager: string;
+    linter?: string;
+    testing?: string;
+    database?: string;
+    cloud?: string;
+}
+
+// ─── Project Management ──────────────────────────────────
+
+export interface Project {
+    id: string;
     name: string;
     path: string;
-    type: string;
-    url: string;
-    container: string;
-    port: number;
-    database: string;
-    group: string;
-    status: string;
-    region: string;
+    addedAt: string;
+    stack?: ProjectStack;
 }
 
-/** Full registry file */
-export interface AppRegistry {
-    apps: AppRegistryEntry[];
-    packages: Array<{ name: string; status: string }>;
+export interface ProjectsConfig {
+    activeProject: string | null;
+    projects: Project[];
 }
 
-/** Validation result */
+// ─── LLM Settings ────────────────────────────────────────
+
+export interface ModelConfig {
+    id: string;
+    name: string;
+}
+
+export interface LLMProvider {
+    id: 'gemini' | 'openai' | 'ollama';
+    name: string;
+    enabled: boolean;
+    apiKey?: string;
+    baseUrl?: string;
+    models: ModelConfig[];
+    defaultModel?: string;
+}
+
+export interface FactorySettings {
+    providers: LLMProvider[];
+    activeProvider: string;
+    buildModel: string;
+    updatedAt?: string;
+}
+
+// ─── Build Pipeline ──────────────────────────────────────
+
+export interface GeneratedFile {
+    filename: string;
+    content: string;
+}
+
+export interface BuildPlan {
+    files: string[];
+    architecture: string;
+    decisions: string[];
+}
+
+export interface BuildResult {
+    success: boolean;
+    files: GeneratedFile[];
+    plan: BuildPlan;
+    iterations: number;
+    errors?: string[];
+}
+
+export interface KnowledgeFile {
+    app: string;
+    filename: string;
+    path: string;
+    content: string;
+}
+
+export interface ProjectContext {
+    bridge: BridgeConfig;
+    knowledgeFiles: KnowledgeFile[];
+    conventions: string[];
+    stack: ProjectStack | undefined;
+}
+
 export interface ValidationResult {
     passed: boolean;
-    checks: ValidationCheck[];
+    errors: string[];
 }
 
-export interface ValidationCheck {
-    name: string;
-    passed: boolean;
-    message: string;
+// ─── Helpers ─────────────────────────────────────────────
+
+/** Slugify a string: "My App Name" → "my-app-name" */
+export function slugify(name: string): string {
+    return name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '');
 }
 
-/** Build report */
-export interface BuildReport {
-    spec: string;
-    slug: string;
-    timestamp: string;
-    filesGenerated: string[];
-    patchesGenerated: string[];
-    validation: ValidationResult;
-    nextSteps: string[];
+/** Get the slug from an AppSpec */
+export function specSlug(spec: AppSpec): string {
+    return slugify(spec.appName);
 }
 
-// ─── Phase 2: Feature Spec Types ──────────────────────────
-
-/** Page type determines template used for generation */
-export type FeaturePageType = 'list' | 'form' | 'detail' | 'custom';
-
-/** Feature spec — defines a feature to add to an existing app */
-export interface FeatureSpec {
-    apiVersion: 'saveaday/v1';
-    kind: 'FeatureSpec';
-    status: SpecStatus;
-    target: {
-        app: string;          // slug of the target app
-    };
-    feature: FeatureDefinition;
-    pages: FeaturePage[];
-    model: FeatureModel;
-    navigation?: FeatureNavigation;
+/** Get the port from an AppSpec (defaults to 3000) */
+export function specPort(spec: AppSpec): number {
+    return spec.deployment?.port || 3000;
 }
 
-export interface FeatureDefinition {
-    name: string;
-    slug: string;
-    description: string;
-    icon?: string;
-}
-
-export interface FeaturePage {
-    route: string;
-    title: string;
-    type: FeaturePageType;
-    dataSource?: string;     // reference to model name
-}
-
-export interface FeatureModel {
-    name: string;
-    collection: string;
-    fields: Record<string, FieldDefinition>;
-}
-
-export interface FeatureNavigation {
-    section: 'main' | 'settings';
-    label: string;
-    icon?: string;
-    position?: string;       // e.g. "after:dashboard"
-}
-
-/** Feature build report */
-export interface FeatureBuildReport {
-    targetApp: string;
-    feature: string;
-    slug: string;
-    timestamp: string;
-    filesGenerated: string[];
-    patchesGenerated: string[];
-    validation: ValidationResult;
-    nextSteps: string[];
+/** Get the region from an AppSpec (defaults to us-central1) */
+export function specRegion(spec: AppSpec): string {
+    return spec.deployment?.region || 'us-central1';
 }

@@ -1,9 +1,9 @@
 /**
- * Shared utility functions for the SaveADay Factory engine.
+ * Shared utility functions for the Factory engine.
  */
 
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import type { AppSpec, AppRegistry } from './types.ts';
@@ -107,6 +107,14 @@ export function capitalize(str: string): string {
  */
 export function slugToPascalCase(slug: string): string {
     return slug.split('-').map(capitalize).join('');
+}
+
+/**
+ * Convert a slug like "my-app" to camelCase like "myApp".
+ */
+export function slugToCamelCase(slug: string): string {
+    const pascal = slugToPascalCase(slug);
+    return pascal.charAt(0).toLowerCase() + pascal.slice(1);
 }
 
 /**

@@ -2,27 +2,17 @@
   "activeProject": "saveaday-monorepo",
   "projects": [
     {
-      "id": "blah",
-      "name": "blah",
-      "path": "/Users/pretheesh/Projects/blah",
-      "addedAt": "2026-02-14T18:04:05.860Z",
-      "stack": {
-        "framework": "next.js",
-        "packageManager": "npm",
-        "linter": "EsLint + Prettier",
-        "testing": "jest"
-      }
-    },
-    {
       "id": "saveaday-monorepo",
       "name": "saveaday-monorepo",
       "path": "/Users/pretheesh/Projects/saveaday",
       "addedAt": "2026-02-14T18:17:38.916Z",
       "stack": {
         "framework": "next.js",
-        "packageManager": "npm",
+        "packageManager": "pnpm",
         "linter": "EsLint + Prettier",
-        "testing": "jest"
+        "testing": "jest",
+        "database": "firestore",
+        "cloud": "gcp"
       }
     }
   ]

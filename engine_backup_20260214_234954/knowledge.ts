@@ -1,5 +1,5 @@
 /**
- * Knowledge persistence for the SaveADay Factory.
+ * Knowledge persistence for the Factory engine.
  * Logs every build for future reference and provides full-text search.
  */
 

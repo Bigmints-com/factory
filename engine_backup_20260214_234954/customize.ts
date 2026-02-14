@@ -7,9 +7,10 @@
 
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
-import type { AppSpec, ResourceDefinition } from './types.ts';
+import type { AppSpec, TableDefinition } from './types.ts';
+import { slugify, specSlug, specPort, specRegion } from './types.ts';
 import { writeFile, slugToPascalCase, capitalize, log } from './utils.ts';
-import { getActiveProject } from './projects.ts';
+import { getActiveProject, getActiveBridgeConfig } from './projects.ts';
 
 /**
  * Apply all customizations to a scaffolded app.
@@ -18,6 +19,8 @@ import { getActiveProject } from './projects.ts';
  * @param spec - The parsed app spec
  */
 export function customizeApp(outputDir: string, spec: AppSpec): void {
+    const slug = specSlug(spec);
+
     log('→', 'Customizing package.json...');
     customizePackageJson(outputDir, spec);
 
@@ -54,51 +57,68 @@ export function customizeApp(outputDir: string, spec: AppSpec): void {
     log('→', 'Generating deploy.sh...');
     generateDeployScript(outputDir, spec);
 
-    log('✓', `Customization complete for ${spec.metadata.slug}`);
+    log('✓', `Customization complete for ${slug}`);
 }
 
 function customizePackageJson(outputDir: string, spec: AppSpec): void {
     const pkgPath = join(outputDir, 'package.json');
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+    const slug = specSlug(spec);
+    const port = specPort(spec);
 
-    pkg.name = `@saveaday/${spec.metadata.slug}`;
-    pkg.scripts.dev = `NODE_OPTIONS='--inspect --no-deprecation' next dev -p ${spec.deployment.port}`;
-    pkg.scripts.start = `next start -p ${spec.deployment.port}`;
+    // Use namespace from bridge config if available
+    let namespace = '';
+    try {
+        const bridge = getActiveBridgeConfig();
+        namespace = bridge.namespace || '';
+    } catch { /* no active project */ }
+
+    pkg.name = namespace ? `${namespace}/${slug}` : slug;
+    pkg.scripts.dev = `NODE_OPTIONS='--inspect --no-deprecation' next dev -p ${port}`;
+    pkg.scripts.start = `next start -p ${port}`;
 
     writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
 }
 
 function customizeAppConfig(outputDir: string, spec: AppSpec): void {
-    const project = getActiveProject();
-    const stack = project.stack || { database: 'firestore', cloud: 'gcp' };
+    const slug = specSlug(spec);
+    const port = specPort(spec);
+    const region = specRegion(spec);
+    const firstTable = spec.data?.tables?.[0]?.name || 'items';
+
+    // Read projectId from bridge config
+    let projectId = '';
+    try {
+        const bridge = getActiveBridgeConfig();
+        projectId = bridge.projectId || '';
+    } catch { /* no active project */ }
 
     const config: any = {
         metadata: {
-            name: spec.metadata.name,
-            displayName: spec.metadata.name,
-            slug: spec.metadata.slug,
-            description: spec.metadata.description,
-            icon: spec.metadata.icon,
-            color: spec.metadata.color,
-            group: spec.metadata.group,
+            name: spec.appName,
+            slug,
+            description: spec.description,
+        },
+        stack: {
+            framework: spec.stack.framework,
+            database: spec.stack.database || 'none',
+            cloud: spec.stack.cloud || 'none',
         },
         deployment: {
-            projectId: 'dvizfb',
-            serviceName: `${spec.metadata.slug}-platform`,
-            region: spec.deployment.region,
-            customDomain: spec.deployment.customDomain || `${spec.metadata.slug}.saveaday.ai`,
-            port: spec.deployment.port,
+            projectId: projectId || 'your-project-id',
+            serviceName: `${slug}-platform`,
+            region,
+            port,
         },
         routes: {
             public: ['/api/public/*', '/embed/*'],
-            protected: ['/dashboard/*', `/${spec.api.resources[0]?.collection || 'items'}/*`, '/settings/*'],
+            protected: ['/dashboard/*', `/${firstTable}/*`, '/settings/*'],
         },
     };
 
-    if (stack.database === 'firestore') {
-        config.firestore = {
-            databaseId: spec.database.databaseId,
-            collections: spec.database.collections,
+    if (spec.data?.tables) {
+        config.data = {
+            tables: spec.data.tables.map(t => t.name),
         };
     }
 
@@ -106,29 +126,61 @@ function customizeAppConfig(outputDir: string, spec: AppSpec): void {
 }
 
 function customizeEnvExample(outputDir: string, spec: AppSpec): void {
-    const project = getActiveProject();
-    const stack = project.stack || { database: 'firestore', cloud: 'gcp' };
+    const port = specPort(spec);
 
-    let content = `# ${spec.metadata.name} - Environment Variables
+    // Read projectId from bridge config
+    let projectId = '';
+    try {
+        const bridge = getActiveBridgeConfig();
+        projectId = bridge.projectId || '';
+    } catch { /* no active project */ }
+
+    let content = `# ${spec.appName} - Environment Variables
 # Copy this to .env.local and fill in values
 
+# Project
+PROJECT_ID=${projectId || 'your-project-id'}
 `;
 
-    if (stack.database === 'firestore') {
-        content += `# Firebase
-FIREBASE_PROJECT_ID=dvizfb
-FIRESTORE_DATABASE_ID=${spec.database.databaseId}
-GOOGLE_APPLICATION_CREDENTIALS=./creds/serviceAccountKey.json
-
+    if (spec.stack.database && spec.stack.database !== 'none') {
+        content += `
+# Database (${spec.stack.database})
+DATABASE_URL=your-database-url
 `;
     }
 
-    content += `# Auth
+    content += `
+# Auth
 NEXTAUTH_SECRET=generate-a-random-secret-here
-NEXTAUTH_URL=http://localhost:${spec.deployment.port}
-SSO_AUTH_URL=http://localhost:3010
+NEXTAUTH_URL=http://localhost:${port}
+`;
 
-# API
+    if (spec.auth?.provider === 'firebase') {
+        content += `
+# Firebase
+FIREBASE_PROJECT_ID=\${PROJECT_ID}
+GOOGLE_APPLICATION_CREDENTIALS=./creds/serviceAccountKey.json
+`;
+    }
+
+    if (spec.auth?.methods?.google) {
+        content += `
+# Google OAuth
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+`;
+    }
+
+    if (spec.auth?.methods?.github) {
+        content += `
+# GitHub OAuth
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
+`;
+    }
+
+    content += `
+# API (set to your API server URL)
 API_URL=http://localhost:3011
 NEXT_PUBLIC_API_URL=http://localhost:3011
 `;
@@ -155,24 +207,28 @@ function customizeMiddleware(outputDir: string, spec: AppSpec): void {
         "'/api/health'",
     ];
 
-    if (spec.features?.embed) {
-        publicRoutes.push("'/embed/*'");
-    }
+    const content = `import { NextRequest, NextResponse } from 'next/server';
+import { getToken } from 'next-auth/jwt';
 
-    const content = `import { NextRequest } from 'next/server';
-import { authMiddleware } from '@saveaday/shared-auth/middleware';
-
-// Define public routes that don't require authentication
 const publicRoutes = [
     ${publicRoutes.join(',\n    ')},
 ];
 
-export default function middleware(request: NextRequest) {
-    return authMiddleware(request, {
-        publicRoutes,
-        loginPath: '/login',
-        redirectTo: '/dashboard',
+function isPublic(pathname: string) {
+    return publicRoutes.some(r => {
+        if (r.endsWith('/*')) return pathname.startsWith(r.slice(0, -2));
+        return pathname === r;
     });
+}
+
+export default async function middleware(request: NextRequest) {
+    if (isPublic(request.nextUrl.pathname)) return NextResponse.next();
+
+    const token = await getToken({ req: request });
+    if (!token) {
+        return NextResponse.redirect(new URL('/login', request.url));
+    }
+    return NextResponse.next();
 }
 
 export const config = {
@@ -192,8 +248,8 @@ function customizeLayout(outputDir: string, spec: AppSpec): void {
     let content = readFileSync(layoutPath, 'utf-8');
 
     // Replace title and description
-    content = content.replace(/title:\s*["'].*?["']/g, `title: "${spec.metadata.name}"`);
-    content = content.replace(/description:\s*["'].*?["']/g, `description: "${spec.metadata.description}"`);
+    content = content.replace(/title:\s*["'].*?["']/g, `title: "${spec.appName}"`);
+    content = content.replace(/description:\s*["'].*?["']/g, `description: "${spec.description}"`);
 
     writeFile(layoutPath, content);
 }
@@ -204,23 +260,24 @@ function customizeGlobalsCss(outputDir: string, spec: AppSpec): void {
 
     let content = readFileSync(cssPath, 'utf-8');
 
-    // Replace brand accent color if provided
-    if (spec.metadata.brandAccent) {
-        content = content.replace(
-            /--color-brand-accent:\s*[^;]+;/,
-            `--color-brand-accent: ${spec.metadata.brandAccent};`
-        );
+    // Add font imports if specified
+    if (spec.frontend?.fonts?.length) {
+        const fontImports = spec.frontend.fonts
+            .map(f => `@import url('https://fonts.googleapis.com/css2?family=${f.replace(/ /g, '+')}&display=swap');`)
+            .join('\n');
+        content = fontImports + '\n\n' + content;
     }
 
     writeFile(cssPath, content);
 }
 
 function customizeHomePage(outputDir: string, spec: AppSpec): void {
-    const content = `import { getUser } from '@saveaday/shared-auth/session';
+    const content = `import { getServerSession } from 'next-auth';
 import HomeClient from '@/components/HomeClient';
 
 export default async function Home() {
-    return <HomeClient initialUser={await getUser()} />;
+    const session = await getServerSession();
+    return <HomeClient initialUser={session?.user ?? null} />;
 }
 `;
 
@@ -228,57 +285,30 @@ export default async function Home() {
 }
 
 function generateHomeClient(outputDir: string, spec: AppSpec): void {
-    const heroTitle = spec.publicPage?.hero?.title || spec.metadata.name;
-    const heroSubtitle = spec.publicPage?.hero?.subtitle || spec.metadata.description;
-
-    const featuresArray = spec.publicPage?.features || [
-        { icon: 'Zap', title: 'Fast', description: 'Built for speed' },
-        { icon: 'Shield', title: 'Secure', description: 'Enterprise-grade security' },
-        { icon: 'BarChart3', title: 'Analytics', description: 'Built-in analytics' },
-    ];
-
-    const faqsArray = spec.publicPage?.faqs || [
-        { q: `What is ${spec.metadata.name}?`, a: spec.metadata.description },
-        { q: 'How do I get started?', a: 'Sign up and follow the onboarding guide.' },
-    ];
-
-    const featuresStr = featuresArray
-        .map(f => `        { icon: '${f.icon}', title: '${f.title}', description: '${f.description}' }`)
-        .join(',\n');
-
-    const faqsStr = faqsArray
-        .map(f => `        { q: '${f.q.replace(/'/g, "\\'")}', a: '${f.a.replace(/'/g, "\\'")}' }`)
-        .join(',\n');
+    const heroTitle = spec.appName;
+    const heroSubtitle = spec.description;
 
     const content = `'use client';
 
-import { PublicHomepage } from '@saveaday/shared-ui';
 import { useRouter } from 'next/navigation';
 
 interface HomeClientProps {
-    initialUser: { uid: string } | null;
+    initialUser: { name?: string; email?: string } | null;
 }
 
 export default function HomeClient({ initialUser }: HomeClientProps) {
     const router = useRouter();
 
     return (
-        <PublicHomepage
-            appName="${spec.metadata.name}"
-            brandColor="${spec.metadata.brandAccent || '#3B82F6'}"
-            hero={{
-                title: '${heroTitle.replace(/'/g, "\\'")}',
-                subtitle: '${heroSubtitle.replace(/'/g, "\\'")}',
-            }}
-            features={[
-${featuresStr}
-            ]}
-            faqs={[
-${faqsStr}
-            ]}
-            ctaLabel={initialUser ? 'View Dashboard' : 'Get Started'}
-            onCtaClick={() => router.push(initialUser ? '/dashboard' : '/login')}
-        />
+        <div>
+            <section style={{textAlign:'center',padding:'4rem 2rem'}}>
+                <h1>${heroTitle.replace(/'/g, "\\'")}</h1>
+                <p>${heroSubtitle.replace(/'/g, "\\'")}</p>
+                <button onClick={() => router.push(initialUser ? '/dashboard' : '/login')}>
+                    {initialUser ? 'View Dashboard' : 'Get Started'}
+                </button>
+            </section>
+        </div>
     );
 }
 `;
@@ -287,14 +317,14 @@ ${faqsStr}
 }
 
 function generateApiClient(outputDir: string, spec: AppSpec): void {
-    const resource = spec.api.resources[0];
-    if (!resource) return;
+    const table = spec.data?.tables?.[0];
+    if (!table) return;
 
-    const pascalName = slugToPascalCase(resource.name);
-    const pluralName = resource.collection;
+    const pascalName = slugToPascalCase(table.name);
+    const tableName = table.name;
 
     const content = `/**
- * API client for ${spec.metadata.name}.
+ * API client for ${spec.appName}.
  *
  * Uses Next.js rewrites to proxy requests to the central API,
  * avoiding CORS issues. All requests use relative URLs.
@@ -305,28 +335,28 @@ import type { ${pascalName} } from '@/types';
 const API_BASE = '';
 
 /**
- * List all ${pluralName}.
+ * List all ${tableName}.
  */
-export async function list${slugToPascalCase(pluralName)}(): Promise<${pascalName}[]> {
-    const res = await fetch(\`\${API_BASE}/api/v1/${pluralName}\`);
+export async function list${slugToPascalCase(tableName)}(): Promise<${pascalName}[]> {
+    const res = await fetch(\`\${API_BASE}/api/v1/${tableName}\`);
     const data = await res.json();
     return data.success ? data.data : data;
 }
 
 /**
- * Get a single ${resource.name} by ID.
+ * Get a single ${tableName} entry by ID.
  */
 export async function get${pascalName}(id: string): Promise<${pascalName}> {
-    const res = await fetch(\`\${API_BASE}/api/v1/${pluralName}/\${id}\`);
+    const res = await fetch(\`\${API_BASE}/api/v1/${tableName}/\${id}\`);
     const data = await res.json();
     return data.success ? data.data : data;
 }
 
 /**
- * Create a new ${resource.name}.
+ * Create a new ${tableName} entry.
  */
 export async function create${pascalName}(payload: Partial<${pascalName}>): Promise<${pascalName}> {
-    const res = await fetch(\`\${API_BASE}/api/v1/${pluralName}\`, {
+    const res = await fetch(\`\${API_BASE}/api/v1/${tableName}\`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -336,10 +366,10 @@ export async function create${pascalName}(payload: Partial<${pascalName}>): Prom
 }
 
 /**
- * Update an existing ${resource.name}.
+ * Update an existing ${tableName} entry.
  */
 export async function update${pascalName}(id: string, payload: Partial<${pascalName}>): Promise<${pascalName}> {
-    const res = await fetch(\`\${API_BASE}/api/v1/${pluralName}/\${id}\`, {
+    const res = await fetch(\`\${API_BASE}/api/v1/${tableName}/\${id}\`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -349,10 +379,10 @@ export async function update${pascalName}(id: string, payload: Partial<${pascalN
 }
 
 /**
- * Delete a ${resource.name}.
+ * Delete a ${tableName} entry.
  */
 export async function delete${pascalName}(id: string): Promise<void> {
-    await fetch(\`\${API_BASE}/api/v1/${pluralName}/\${id}\`, {
+    await fetch(\`\${API_BASE}/api/v1/${tableName}/\${id}\`, {
         method: 'DELETE',
     });
 }
@@ -362,10 +392,17 @@ export async function delete${pascalName}(id: string): Promise<void> {
 }
 
 function generateTypes(outputDir: string, spec: AppSpec): void {
-    const typeBlocks = spec.api.resources.map(resource => {
-        const pascalName = slugToPascalCase(resource.name);
-        const fieldLines = Object.entries(resource.fields).map(([name, def]) => {
-            const tsType = def.type === 'array' ? 'unknown[]' : def.type === 'object' ? 'Record<string, unknown>' : def.type;
+    const tables = spec.data?.tables || [];
+    const typeBlocks = tables.map(table => {
+        const pascalName = slugToPascalCase(table.name);
+        const fieldLines = Object.entries(table.fields).map(([name, def]) => {
+            let tsType: string;
+            switch (def.type) {
+                case 'array': tsType = 'unknown[]'; break;
+                case 'object': tsType = 'Record<string, unknown>'; break;
+                case 'datetime': tsType = 'string'; break;
+                default: tsType = def.type;
+            }
             const optional = def.required ? '' : '?';
             const comment = def.description ? ` /** ${def.description} */\n    ` : '';
             return `    ${comment}${name}${optional}: ${tsType};`;
@@ -374,19 +411,14 @@ function generateTypes(outputDir: string, spec: AppSpec): void {
         // Add standard fields
         fieldLines.unshift(
             '    id: string;',
-            '    ownerId: string;',
-        );
-        fieldLines.push(
-            '    createdAt: string;',
-            '    updatedAt: string;',
         );
 
         return `export interface ${pascalName} {\n${fieldLines.join('\n')}\n}`;
     });
 
     const content = `/**
- * Type definitions for ${spec.metadata.name}.
- * Auto-generated by saveaday-factory.
+ * Type definitions for ${spec.appName}.
+ * Auto-generated by Factory engine.
  */
 
 ${typeBlocks.join('\n\n')}
@@ -398,50 +430,58 @@ ${typeBlocks.join('\n\n')}
 }
 
 function generateDeployScript(outputDir: string, spec: AppSpec): void {
-    const project = getActiveProject();
-    const stack = project.stack || { database: 'firestore', cloud: 'gcp' };
+    const slug = specSlug(spec);
+    const region = specRegion(spec);
+    const cloud = spec.stack.cloud || 'none';
 
-    let envVars = stack.database === 'firestore' 
-        ? `API_URL=https://api.saveaday.ai,FIRESTORE_DATABASE_ID=${spec.database.databaseId}`
-        : `API_URL=https://api.saveaday.ai`;
+    // Read projectId from bridge config
+    let projectId = '';
+    try {
+        const bridge = getActiveBridgeConfig();
+        projectId = bridge.projectId || '';
+    } catch { /* no active project */ }
+
+    const cloudTarget = cloud === 'gcp' ? 'Cloud Run'
+        : cloud === 'aws' ? 'AWS'
+        : cloud === 'vercel' ? 'Vercel'
+        : 'Cloud';
 
     const content = `#!/bin/bash
-# Deploy ${spec.metadata.name} to ${stack.cloud === 'gcp' ? 'Cloud Run' : stack.cloud || 'Cloud'}
+# Deploy ${spec.appName} to ${cloudTarget}
 set -e
 
 # Resolve project root
 SCRIPT_DIR="$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-APP_NAME="${spec.metadata.slug}"
-PROJECT_ID="dvizfb"
-REGION="${spec.deployment.region}"
-SERVICE_NAME="${spec.metadata.slug}-platform"
+APP_NAME="${slug}"
+PROJECT_ID="${projectId || 'your-project-id'}"
+REGION="${region}"
+SERVICE_NAME="${slug}-platform"
 IMAGE="gcr.io/$PROJECT_ID/$SERVICE_NAME"
 
 echo "🚀 Deploying $APP_NAME..."
 
-# Build Docker image (amd64 required for Cloud Run)
+# Build Docker image
 docker build \\
     --platform linux/amd64 \\
     -t "$IMAGE" \\
     -f "$SCRIPT_DIR/Dockerfile" \\
     "$PROJECT_ROOT"
 
-# Push to GCR
+# Push to registry
 docker push "$IMAGE"
 
-# Deploy to ${stack.cloud === 'gcp' ? 'Cloud Run' : stack.cloud || 'Cloud'}
+# Deploy to ${cloudTarget}
 gcloud run deploy "$SERVICE_NAME" \\
     --image "$IMAGE" \\
     --project "$PROJECT_ID" \\
     --region "$REGION" \\
     --platform managed \\
     --allow-unauthenticated \\
-    --port 8080 \\
-    --set-env-vars "${envVars}"
+    --port 8080
 
-echo "✅ Deployed to https://${spec.deployment.customDomain || spec.metadata.slug + '.saveaday.ai'}"
+echo "✅ Deployed $APP_NAME"
 `;
 
     writeFile(join(outputDir, 'deploy.sh'), content);

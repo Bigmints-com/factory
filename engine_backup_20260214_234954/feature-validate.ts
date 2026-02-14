@@ -2,8 +2,8 @@
  * Feature validation — validates a FeatureSpec YAML against schema and checks.
  */
 import Ajv from 'ajv';
-import type { FeatureSpec, ValidationResult, ValidationCheck } from './types.js';
-import { PATHS, log } from './utils.js';
+import type { FeatureSpec, ValidationResult, ValidationCheck } from './types.ts';
+import { PATHS, log } from './utils.ts';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 

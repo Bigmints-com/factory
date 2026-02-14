@@ -8,7 +8,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { writeFile, log } from './utils.ts';
-import { initBridge, hasBridge, type BridgeConfig, loadBridgeConfig } from './bridge.ts';
+import { initBridge, hasBridge, loadBridgeConfig } from './bridge.ts';
+import { slugify } from './types.ts';
+import type { BridgeConfig } from './bridge.ts';
+import type { ProjectStack } from './types.ts';
 
 // ─── Types ────────────────────────────────────────────────
 
@@ -18,15 +21,6 @@ export interface Project {
     path: string;
     addedAt: string;
     stack?: ProjectStack;
-}
-
-export interface ProjectStack {
-    framework: string;
-    packageManager: string;
-    linter: string;
-    testing: string;
-    database?: string; // e.g. "firestore", "mongodb", "postgres"
-    cloud?: string;    // e.g. "gcp", "aws", "vercel"
 }
 
 export interface ProjectsConfig {
@@ -186,13 +180,4 @@ export function getActiveSpecsDir(): { apps: string; features: string } {
 export function getActiveBridgeConfig(): BridgeConfig {
     const project = getActiveProject();
     return loadBridgeConfig(project.path);
-}
-
-// ─── Helpers ──────────────────────────────────────────────
-
-function slugify(name: string): string {
-    return name
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-|-$/g, '');
 }
