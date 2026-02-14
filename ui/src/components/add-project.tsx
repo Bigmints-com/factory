@@ -41,11 +41,32 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
+interface BridgeSummary {
+  name: string | null;
+  description: string | null;
+  stack: {
+    framework: string;
+    packageManager: string;
+    linter?: string;
+    testing?: string;
+    database?: string;
+    cloud?: string;
+  } | null;
+  stats: {
+    apps: number;
+    packages: number;
+    conventions: number;
+    scripts: number;
+  };
+  hasSkills: boolean;
+}
+
 interface Project {
   id: string;
   name: string;
   path: string;
   addedAt: string;
+  bridge?: BridgeSummary | null;
 }
 
 interface AddProjectProps {
@@ -474,58 +495,129 @@ export function AddProject({ onProjectAdded }: AddProjectProps) {
                       project.id === activeId && 'ring-1 ring-primary/30 bg-primary/5'
                     )}
                   >
-                    <CardContent className="flex items-center gap-3 py-3 px-4">
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-background border">
-                        <IconFolder className="h-4 w-4 text-muted-foreground" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="text-xs font-semibold truncate">{project.name}</p>
-                          {project.id === activeId && (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[9px] font-medium text-primary">
-                              <IconRadio className="h-2 w-2" />
-                              Active
-                            </span>
-                          )}
+                    <CardContent className="py-3 px-4 space-y-2.5">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-background border">
+                          <IconFolder className="h-4 w-4 text-muted-foreground" />
                         </div>
-                        <p className="text-[10px] text-muted-foreground truncate font-mono mt-0.5">
-                          {project.path}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        {project.id !== activeId && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-7 text-[10px] px-2"
-                            onClick={() => handleSwitch(project.id)}
-                            disabled={!!switching}
-                          >
-                            {switching === project.id ? (
-                              <IconLoader2 className="h-3 w-3 animate-spin" />
-                            ) : (
-                              'Activate'
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs font-semibold truncate">{project.name}</p>
+                            {project.id === activeId && (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[9px] font-medium text-primary">
+                                <IconRadio className="h-2 w-2" />
+                                Active
+                              </span>
                             )}
-                          </Button>
-                        )}
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon" className="h-7 w-7">
-                              <IconDots className="h-3.5 w-3.5" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                             <DropdownMenuItem 
-                              className="text-destructive focus:text-destructive"
-                              onClick={() => handleDelete(project.id)}
-                              disabled={!!deleting}
+                          </div>
+                          <p className="text-[10px] text-muted-foreground truncate font-mono mt-0.5">
+                            {project.path}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {project.id !== activeId && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 text-[10px] px-2"
+                              onClick={() => handleSwitch(project.id)}
+                              disabled={!!switching}
                             >
-                              <IconTrash className="mr-2 h-4 w-4" />
-                              Remove
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                              {switching === project.id ? (
+                                <IconLoader2 className="h-3 w-3 animate-spin" />
+                              ) : (
+                                'Activate'
+                              )}
+                            </Button>
+                          )}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="icon" className="h-7 w-7">
+                                <IconDots className="h-3.5 w-3.5" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                               <DropdownMenuItem 
+                                className="text-destructive focus:text-destructive"
+                                onClick={() => handleDelete(project.id)}
+                                disabled={!!deleting}
+                              >
+                                <IconTrash className="mr-2 h-4 w-4" />
+                                Remove
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
                       </div>
+
+                      {/* Bridge Summary */}
+                      {project.bridge && (
+                        <div className="pl-11 space-y-2">
+                          {/* Stack Badges */}
+                          {project.bridge.stack && (
+                            <div className="flex flex-wrap gap-1.5">
+                              {project.bridge.stack.framework && (
+                                <span className="inline-flex items-center rounded-md bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium text-blue-400 ring-1 ring-inset ring-blue-500/20">
+                                  {project.bridge.stack.framework}
+                                </span>
+                              )}
+                              {project.bridge.stack.packageManager && (
+                                <span className="inline-flex items-center rounded-md bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400 ring-1 ring-inset ring-emerald-500/20">
+                                  {project.bridge.stack.packageManager}
+                                </span>
+                              )}
+                              {project.bridge.stack.database && (
+                                <span className="inline-flex items-center rounded-md bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-400 ring-1 ring-inset ring-amber-500/20">
+                                  {project.bridge.stack.database}
+                                </span>
+                              )}
+                              {project.bridge.stack.cloud && (
+                                <span className="inline-flex items-center rounded-md bg-purple-500/10 px-2 py-0.5 text-[10px] font-medium text-purple-400 ring-1 ring-inset ring-purple-500/20">
+                                  {project.bridge.stack.cloud}
+                                </span>
+                              )}
+                              {project.bridge.stack.testing && (
+                                <span className="inline-flex items-center rounded-md bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium text-rose-400 ring-1 ring-inset ring-rose-500/20">
+                                  {project.bridge.stack.testing}
+                                </span>
+                              )}
+                              {project.bridge.stack.linter && (
+                                <span className="inline-flex items-center rounded-md bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium text-cyan-400 ring-1 ring-inset ring-cyan-500/20">
+                                  {project.bridge.stack.linter}
+                                </span>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Stats Row */}
+                          <div className="flex items-center gap-4 text-[10px] text-muted-foreground">
+                            {project.bridge.stats.apps > 0 && (
+                              <span className="flex items-center gap-1">
+                                <IconRocket className="h-3 w-3" />
+                                <span className="font-medium text-foreground">{project.bridge.stats.apps}</span> apps
+                              </span>
+                            )}
+                            {project.bridge.stats.packages > 0 && (
+                              <span className="flex items-center gap-1">
+                                <IconArchive className="h-3 w-3" />
+                                <span className="font-medium text-foreground">{project.bridge.stats.packages}</span> packages
+                              </span>
+                            )}
+                            {project.bridge.stats.scripts > 0 && (
+                              <span className="flex items-center gap-1">
+                                <IconSettings className="h-3 w-3" />
+                                <span className="font-medium text-foreground">{project.bridge.stats.scripts}</span> scripts
+                              </span>
+                            )}
+                            {project.bridge.hasSkills && (
+                              <span className="flex items-center gap-1">
+                                <IconCheck className="h-3 w-3 text-emerald-400" />
+                                skills
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </CardContent>
                   </Card>
                 ))}

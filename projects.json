@@ -1,5 +1,5 @@
 {
-  "activeProject": "saveaday-monorepo",
+  "activeProject": "test-tasks",
   "projects": [
     {
       "id": "saveaday-monorepo",
@@ -13,6 +13,18 @@
         "testing": "jest",
         "database": "firestore",
         "cloud": "gcp"
+      }
+    },
+    {
+      "id": "test-tasks",
+      "name": "test-tasks",
+      "path": "/Users/pretheesh/Projects/test-tasks",
+      "addedAt": "2026-02-14T20:54:40.803Z",
+      "stack": {
+        "framework": "next.js",
+        "packageManager": "npm",
+        "linter": "EsLint + Prettier",
+        "testing": "jest"
       }
     }
   ]

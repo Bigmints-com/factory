@@ -24,8 +24,54 @@ function stripAnsi(str: string) {
 export async function GET() {
   try {
     const config = loadProjectsConfig();
+
+    // Enrich each project with its factory.yaml bridge data
+    const enrichedProjects = config.projects.map((project: any) => {
+      const bridgePath = join(project.path, '.factory', 'factory.yaml');
+      let bridge = null;
+      if (existsSync(bridgePath)) {
+        try {
+          const { parse: parseYaml } = require('yaml');
+          const raw = parseYaml(readFileSync(bridgePath, 'utf-8'));
+
+          // Data can live at top-level or under raw.monorepo
+          const mono = raw.monorepo || {};
+          const apps = raw.apps || mono.apps || {};
+          const packages = raw.packages || mono.packages || {};
+          const conventions = raw.conventions || mono.conventions || {};
+          const scripts = raw.scripts || mono.scripts || [];
+          const skills = raw.skills || mono.skills || {};
+
+          // Count nested category objects: { superapp: [...], independent: [...] }
+          const countNested = (obj: any) => {
+            if (Array.isArray(obj)) return obj.length;
+            if (obj && typeof obj === 'object') {
+              return Object.values(obj).reduce((sum: number, v: any) => sum + (Array.isArray(v) ? v.length : 0), 0);
+            }
+            return 0;
+          };
+
+          bridge = {
+            name: raw.appName || raw.name || mono.name || null,
+            description: raw.description || null,
+            stack: raw.stack || project.stack || null,
+            stats: {
+              apps: countNested(apps),
+              packages: countNested(packages),
+              conventions: Array.isArray(conventions.rules) ? conventions.rules.length : (conventions.rules ? 1 : 0),
+              scripts: Array.isArray(scripts) ? scripts.length : 0,
+            },
+            hasSkills: !!(skills.files?.length || skills.discovery === 'auto'),
+          };
+        } catch {
+          // Silently skip malformed yaml
+        }
+      }
+      return { ...project, bridge };
+    });
+
     return NextResponse.json({
-      projects: config.projects,
+      projects: enrichedProjects,
       activeId: config.activeProject,
     });
   } catch (err: any) {
