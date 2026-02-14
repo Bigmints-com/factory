@@ -96,6 +96,11 @@ async function handleBuild(specPath?: string): Promise<void> {
         ? resolve(project.path, bridge.apps_dir, slug)
         : resolve(project.path, slug);
     writeFiles(targetDir, result.files);
+    setupProject(targetDir, spec.stack.packageManager);
+
+    // Knowledge feedback + AGENTS.md
+    writeKnowledgeEntry(project.path, spec.appName, result, spec.stack, specPath!);
+    writeAppAgentsMd(targetDir, spec.appName, spec.stack, result.files);
 
     // Step 7: Git commit + push
     logStep(7, 7, 'Committing and pushing...');

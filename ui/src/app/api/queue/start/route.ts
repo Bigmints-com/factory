@@ -1,10 +1,12 @@
 /**
  * Queue execution API — start processing the build queue.
  * Processes items sequentially, skipping failures and continuing to next.
+ * Resolves spec paths from the active project.
  */
 
 import { NextResponse } from 'next/server';
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import Database from 'better-sqlite3';
 
@@ -19,6 +21,47 @@ function getDb() {
 
 function stripAnsi(str: string): string {
   return str.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+/**
+ * Resolve a spec filename to its absolute path by checking the active project.
+ */
+function resolveSpecPath(specFile: string, kind: string): string {
+  // If already absolute, use as-is
+  if (specFile.startsWith('/') && existsSync(specFile)) return specFile;
+
+  const projectsPath = join(FACTORY_ROOT, 'projects.json');
+  if (existsSync(projectsPath)) {
+    try {
+      const config = JSON.parse(readFileSync(projectsPath, 'utf-8'));
+      const activeId = config.activeProject;
+      const project = config.projects?.find((p: { id: string }) => p.id === activeId);
+
+      if (project?.path) {
+        const cleanFile = specFile.replace(/^(apps|features)\//, '');
+        const candidates = kind === 'FeatureSpec'
+          ? [
+              join(project.path, '.factory', 'specs', 'features', cleanFile),
+              join(project.path, '.factory', 'specs', specFile),
+            ]
+          : [
+              join(project.path, '.factory', 'specs', 'apps', cleanFile),
+              join(project.path, '.factory', 'specs', 'features', cleanFile),
+              join(project.path, '.factory', 'specs', specFile),
+            ];
+
+        for (const candidate of candidates) {
+          if (existsSync(candidate)) return candidate;
+        }
+      }
+    } catch { /* fall through */ }
+  }
+
+  // Fallback: factory root
+  const fallback = join(FACTORY_ROOT, 'specs', specFile);
+  if (existsSync(fallback)) return fallback;
+
+  return specFile; // Return as-is, let CLI report the error
 }
 
 /** POST — Start processing the queue */
@@ -47,7 +90,7 @@ export async function POST() {
       durationMs: number;
     }[] = [];
 
-    let pending = db.prepare(`
+    const pending = db.prepare(`
       SELECT * FROM queue_items WHERE status = 'pending'
       ORDER BY priority DESC, added_at ASC
     `).all() as any[];
@@ -60,17 +103,20 @@ export async function POST() {
         .run(new Date().toISOString(), item.id);
 
       try {
+        // Resolve the spec path from the active project
+        const resolvedPath = resolveSpecPath(item.spec_file, item.kind);
+
         // Determine command based on kind
         let cmd: string;
         if (item.kind === 'FeatureSpec') {
-          cmd = `npx tsx engine/cli.ts feature build "${item.spec_file}" 2>&1`;
+          cmd = `npx tsx engine/cli.ts feature build "${resolvedPath}" 2>&1`;
         } else {
-          cmd = `npx tsx engine/cli.ts build "${item.spec_file}" 2>&1`;
+          cmd = `npx tsx engine/cli.ts build "${resolvedPath}" 2>&1`;
         }
 
         const output = stripAnsi(execSync(cmd, {
           cwd: FACTORY_ROOT,
-          timeout: 120_000, // 2 minute timeout
+          timeout: 300_000, // 5 minute timeout for LLM builds
           encoding: 'utf-8',
         }));
 

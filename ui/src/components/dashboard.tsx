@@ -181,24 +181,49 @@ export default function Dashboard() {
   const handleBuild = async (file: string) => {
     setActiveAction({ type: 'build', file });
     setValidationResult(null);
-    setBuildOutput('Building...\n');
+    setBuildOutput('Enqueuing spec...\n');
     setOutputPanelOpen(true);
 
     try {
-      const res = await fetch('/api/build', {
+      // 1. Enqueue the spec
+      const enqueueRes = await fetch('/api/queue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ specFile: file }),
+        body: JSON.stringify({ specFile: file, kind: 'AppSpec' }),
       });
-      const data = await res.json();
-      setBuildOutput(data.output || data.error || 'Unknown result');
+      const enqueueData = await enqueueRes.json();
 
-      // Refresh reports after build
-      if (data.success) {
+      if (!enqueueRes.ok) {
+        setBuildOutput(`Enqueue failed: ${enqueueData.error || 'Unknown error'}`);
+        toast.error('Failed to enqueue', { description: enqueueData.error });
+        return;
+      }
+
+      setBuildOutput('Spec queued. Starting build queue...\n');
+      toast.success('Spec queued', { description: file });
+
+      // 2. Start the queue
+      const startRes = await fetch('/api/queue/start', { method: 'POST' });
+      const startData = await startRes.json();
+
+      if (!startRes.ok) {
+        setBuildOutput(`Queue start failed: ${startData.error || 'Unknown error'}`);
+        toast.error('Queue start failed', { description: startData.error });
+        return;
+      }
+
+      // 3. Show results
+      const output = startData.results
+        ?.map((r: any) => `[${r.status.toUpperCase()}] ${r.specFile}\n${r.output || r.error || ''}`)
+        .join('\n\n') || 'Queue processed';
+      setBuildOutput(output);
+      await fetchSpecs();
+
+      if (startData.completed > 0) {
         await fetchReports();
-        toast.success('Build completed', { description: file });
-      } else {
-        toast.error('Build failed', { description: file });
+        toast.success(`Build completed (${startData.completed} succeeded, ${startData.failed} failed)`);
+      } else if (startData.failed > 0) {
+        toast.error(`Build failed (${startData.failed} failed)`);
       }
     } catch {
       setBuildOutput('Build request failed');
@@ -212,25 +237,64 @@ export default function Dashboard() {
     const actionType = action === 'validate' ? 'feature-validate' : 'feature-build';
     setActiveAction({ type: actionType as any, file });
     setValidationResult(null);
-    setBuildOutput(action === 'build' ? 'Building feature...\n' : '');
+    setBuildOutput(action === 'build' ? 'Enqueuing feature...\n' : '');
     setOutputPanelOpen(true);
 
     try {
-      const res = await fetch('/api/feature-build', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ specFile: file, action }),
-      });
-      const data = await res.json();
-      setBuildOutput(data.output || data.error || 'Unknown result');
+      if (action === 'build') {
+        // Route feature builds through the queue
+        const enqueueRes = await fetch('/api/queue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ specFile: file, kind: 'FeatureSpec' }),
+        });
+        const enqueueData = await enqueueRes.json();
 
-      if (data.success && action === 'build') {
-        await fetchReports();
-        toast.success('Feature build completed', { description: file });
-      } else if (data.success) {
-        toast.success('Feature validation passed', { description: file });
+        if (!enqueueRes.ok) {
+          setBuildOutput(`Enqueue failed: ${enqueueData.error || 'Unknown error'}`);
+          toast.error('Failed to enqueue', { description: enqueueData.error });
+          return;
+        }
+
+        setBuildOutput('Feature queued. Starting build queue...\n');
+        toast.success('Feature queued', { description: file });
+
+        const startRes = await fetch('/api/queue/start', { method: 'POST' });
+        const startData = await startRes.json();
+
+        if (!startRes.ok) {
+          setBuildOutput(`Queue start failed: ${startData.error || 'Unknown error'}`);
+          toast.error('Queue start failed', { description: startData.error });
+          return;
+        }
+
+        const output = startData.results
+          ?.map((r: any) => `[${r.status.toUpperCase()}] ${r.specFile}\n${r.output || r.error || ''}`)
+          .join('\n\n') || 'Queue processed';
+        setBuildOutput(output);
+        await fetchSpecs();
+
+        if (startData.completed > 0) {
+          await fetchReports();
+          toast.success('Feature build completed');
+        } else if (startData.failed > 0) {
+          toast.error('Feature build failed');
+        }
       } else {
-        toast.error(`Feature ${action} failed`, { description: file });
+        // Validation stays direct (no queue needed)
+        const res = await fetch('/api/feature-build', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ specFile: file, action: 'validate' }),
+        });
+        const data = await res.json();
+        setBuildOutput(data.output || data.error || 'Unknown result');
+
+        if (data.success) {
+          toast.success('Feature validation passed', { description: file });
+        } else {
+          toast.error('Feature validation failed', { description: file });
+        }
       }
     } catch {
       setBuildOutput(`Feature ${action} request failed`);
