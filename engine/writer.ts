@@ -67,10 +67,11 @@ export function setupProject(targetDir: string, packageManager?: string): boolea
  */
 export function gitCommit(repoPath: string, message: string): boolean {
     try {
-        // Check if it's a git repo
+        // Init git repo if not present
         if (!existsSync(join(repoPath, '.git'))) {
-            log('!', 'Not a git repo — skipping commit');
-            return false;
+            log('●', 'Initializing git repo');
+            execSync('git init', { cwd: repoPath, stdio: 'pipe' });
+            log('✓', 'Git repo initialized');
         }
 
         execSync('git add -A', { cwd: repoPath, stdio: 'pipe' });
