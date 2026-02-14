@@ -389,13 +389,7 @@ export function QueueView() {
     pending: 0, running: 0, completed: 0, failed: 0, 'needs-attention': 0, total: 0,
   });
   const [isRunning, setIsRunning] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
   const [expandedItem, setExpandedItem] = useState<string | null>(null);
-  const [processResult, setProcessResult] = useState<{
-    processed: number;
-    completed: number;
-    failed: number;
-  } | null>(null);
 
   const fetchQueue = useCallback(async () => {
     try {
@@ -416,23 +410,12 @@ export function QueueView() {
   }, [fetchQueue]);
 
   const handleStart = async () => {
-    setIsProcessing(true);
-    setProcessResult(null);
     try {
-      const res = await fetch('/api/queue/start', { method: 'POST' });
-      const data = await res.json();
-      if (data.success) {
-        setProcessResult({
-          processed: data.processed,
-          completed: data.completed,
-          failed: data.failed,
-        });
-      }
+      await fetch('/api/queue/start', { method: 'POST' });
+      // Immediately poll to pick up the running state
       await fetchQueue();
     } catch {
       console.error('Failed to start queue');
-    } finally {
-      setIsProcessing(false);
     }
   };
 
@@ -509,14 +492,14 @@ export function QueueView() {
           )}
           <Button
             onClick={handleStart}
-            disabled={isProcessing || stats.pending === 0}
+            disabled={isRunning || stats.pending === 0}
             size="sm"
             className="bg-emerald-600 hover:bg-emerald-700 text-white"
           >
-            {isProcessing ? (
+            {isRunning ? (
               <>
                 <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                Processing...
+                Running...
               </>
             ) : (
               <>

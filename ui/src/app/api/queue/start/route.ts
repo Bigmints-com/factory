@@ -1,13 +1,15 @@
 /**
  * Queue execution API — start processing the build queue.
- * Processes items sequentially, skipping failures and continuing to next.
- * Resolves spec paths from the active project.
+ * 
+ * Spawns builds as background processes so the API returns immediately.
+ * Items are processed sequentially — each build updates the DB on completion.
+ * The UI polls /api/queue every 3s to pick up status changes.
  */
 
 import { NextResponse } from 'next/server';
 import { resolve, join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
-import { execSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import Database from 'better-sqlite3';
 
 const DB_PATH = resolve(process.cwd(), '..', 'factory.db');
@@ -64,7 +66,127 @@ function resolveSpecPath(specFile: string, kind: string): string {
   return specFile; // Return as-is, let CLI report the error
 }
 
-/** POST — Start processing the queue */
+/**
+ * Process queue items sequentially in the background.
+ * This function runs detached from the HTTP request.
+ */
+function processQueueInBackground() {
+  const db = getDb();
+
+  const pending = db.prepare(`
+    SELECT * FROM queue_items WHERE status = 'pending'
+    ORDER BY priority DESC, added_at ASC
+  `).all() as any[];
+
+  if (pending.length === 0) {
+    db.prepare(`UPDATE queue_state SET value = 'false' WHERE key = 'is_running'`).run();
+    db.close();
+    return;
+  }
+
+  // Process items one at a time, chaining via callbacks
+  let index = 0;
+
+  function processNext() {
+    if (index >= pending.length) {
+      // All done — mark queue as not running
+      const finDb = getDb();
+      finDb.prepare(`UPDATE queue_state SET value = 'false' WHERE key = 'is_running'`).run();
+      finDb.close();
+      return;
+    }
+
+    const item = pending[index];
+    index++;
+
+    const startTime = Date.now();
+
+    // Mark item as running
+    const runDb = getDb();
+    runDb.prepare(`UPDATE queue_items SET status = 'running', started_at = ? WHERE id = ?`)
+      .run(new Date().toISOString(), item.id);
+    runDb.close();
+
+    // Resolve the spec path
+    const resolvedPath = resolveSpecPath(item.spec_file, item.kind);
+
+    // Build the command
+    const args = item.kind === 'FeatureSpec'
+      ? ['tsx', 'engine/cli.ts', 'feature', 'build', resolvedPath]
+      : ['tsx', 'engine/cli.ts', 'build', resolvedPath];
+
+    // Spawn the build process
+    const child = spawn('npx', args, {
+      cwd: FACTORY_ROOT,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env },
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (data: Buffer) => {
+      stdout += data.toString();
+    });
+
+    child.stderr.on('data', (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    child.on('close', (code: number | null) => {
+      const durationMs = Date.now() - startTime;
+      const output = stripAnsi(stdout + stderr);
+      const doneDb = getDb();
+
+      if (code === 0) {
+        // Success
+        doneDb.prepare(`
+          UPDATE queue_items
+          SET status = 'completed', output = ?, completed_at = ?, duration_ms = ?
+          WHERE id = ?
+        `).run(output, new Date().toISOString(), durationMs, item.id);
+
+        logBuild(doneDb, item, 'completed', output, durationMs);
+      } else {
+        // Failed
+        const errorMsg = stderr || `Process exited with code ${code}`;
+        doneDb.prepare(`
+          UPDATE queue_items
+          SET status = 'failed', output = ?, error = ?, completed_at = ?, duration_ms = ?
+          WHERE id = ?
+        `).run(output, stripAnsi(errorMsg), new Date().toISOString(), durationMs, item.id);
+
+        logBuild(doneDb, item, 'failed', output, durationMs);
+      }
+
+      doneDb.close();
+
+      // Process next item
+      processNext();
+    });
+
+    child.on('error', (err: Error) => {
+      const durationMs = Date.now() - startTime;
+      const errDb = getDb();
+      errDb.prepare(`
+        UPDATE queue_items
+        SET status = 'failed', output = '', error = ?, completed_at = ?, duration_ms = ?
+        WHERE id = ?
+      `).run(err.message, new Date().toISOString(), durationMs, item.id);
+
+      logBuild(errDb, item, 'failed', '', durationMs);
+      errDb.close();
+
+      // Continue to next item
+      processNext();
+    });
+  }
+
+  db.close();
+  processNext();
+}
+
+/** POST — Start processing the queue (returns immediately) */
 export async function POST() {
   const db = getDb();
 
@@ -76,108 +198,25 @@ export async function POST() {
       return NextResponse.json({ error: 'Queue is already running' }, { status: 409 });
     }
 
+    // Check for pending items
+    const pendingCount = (db.prepare(`SELECT COUNT(*) as count FROM queue_items WHERE status = 'pending'`).get() as any)?.count || 0;
+    if (pendingCount === 0) {
+      db.close();
+      return NextResponse.json({ error: 'No pending items in queue' }, { status: 400 });
+    }
+
     // Mark as running
     db.prepare(`UPDATE queue_state SET value = 'true' WHERE key = 'is_running'`).run();
     db.prepare(`UPDATE queue_state SET value = ? WHERE key = 'last_run_at'`).run(new Date().toISOString());
-
-    // Process all pending items
-    const results: {
-      id: string;
-      specFile: string;
-      status: string;
-      output: string;
-      error: string | null;
-      durationMs: number;
-    }[] = [];
-
-    const pending = db.prepare(`
-      SELECT * FROM queue_items WHERE status = 'pending'
-      ORDER BY priority DESC, added_at ASC
-    `).all() as any[];
-
-    for (const item of pending) {
-      const startTime = Date.now();
-
-      // Mark item as running
-      db.prepare(`UPDATE queue_items SET status = 'running', started_at = ? WHERE id = ?`)
-        .run(new Date().toISOString(), item.id);
-
-      try {
-        // Resolve the spec path from the active project
-        const resolvedPath = resolveSpecPath(item.spec_file, item.kind);
-
-        // Determine command based on kind
-        let cmd: string;
-        if (item.kind === 'FeatureSpec') {
-          cmd = `npx tsx engine/cli.ts feature build "${resolvedPath}" 2>&1`;
-        } else {
-          cmd = `npx tsx engine/cli.ts build "${resolvedPath}" 2>&1`;
-        }
-
-        const output = stripAnsi(execSync(cmd, {
-          cwd: FACTORY_ROOT,
-          timeout: 600_000, // 10 minute safety net (pipeline has its own 4-min guard)
-          encoding: 'utf-8',
-        }));
-
-        const durationMs = Date.now() - startTime;
-
-        // Mark as completed
-        db.prepare(`
-          UPDATE queue_items
-          SET status = 'completed', output = ?, completed_at = ?, duration_ms = ?
-          WHERE id = ?
-        `).run(output, new Date().toISOString(), durationMs, item.id);
-
-        // Log to knowledge base
-        logBuild(db, item, 'completed', output, durationMs);
-
-        results.push({
-          id: item.id,
-          specFile: item.spec_file,
-          status: 'completed',
-          output,
-          error: null,
-          durationMs,
-        });
-      } catch (err: any) {
-        const durationMs = Date.now() - startTime;
-        const errorOutput = stripAnsi(err.stdout || err.message || String(err));
-
-        // Mark as failed — but CONTINUE to next item
-        db.prepare(`
-          UPDATE queue_items
-          SET status = 'failed', output = ?, error = ?, completed_at = ?, duration_ms = ?
-          WHERE id = ?
-        `).run(errorOutput, err.message || String(err), new Date().toISOString(), durationMs, item.id);
-
-        // Log failure to knowledge base
-        logBuild(db, item, 'failed', errorOutput, durationMs);
-
-        results.push({
-          id: item.id,
-          specFile: item.spec_file,
-          status: 'failed',
-          output: errorOutput,
-          error: err.message || String(err),
-          durationMs,
-        });
-      }
-    }
-
-    // Mark queue as no longer running
-    db.prepare(`UPDATE queue_state SET value = 'false' WHERE key = 'is_running'`).run();
     db.close();
 
-    const completed = results.filter(r => r.status === 'completed').length;
-    const failed = results.filter(r => r.status === 'failed').length;
+    // Fire-and-forget: process queue in background
+    processQueueInBackground();
 
     return NextResponse.json({
       success: true,
-      processed: results.length,
-      completed,
-      failed,
-      results,
+      message: 'Queue processing started',
+      pending: pendingCount,
     });
   } catch (error) {
     // Ensure we reset running state on crash
