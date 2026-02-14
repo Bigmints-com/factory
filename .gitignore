@@ -1,5 +1,11 @@
 node_modules/
 dist/
 output/
+reports/
+reference/
 .DS_Store
 *.log
+*.db
+package-lock.json
+AGENTS.md
+SKILL.md

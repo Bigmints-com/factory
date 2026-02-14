@@ -1,1 +1,0 @@
-/Users/pretheesh/Projects/saveaday/.agent/rules/deployment.md

@@ -1,1 +1,0 @@
-/Users/pretheesh/Projects/saveaday/apps/api/skills.md
