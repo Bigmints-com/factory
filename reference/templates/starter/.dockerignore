@@ -1,0 +1,32 @@
+# Docker - monorepo specific ignores
+**/node_modules
+**/.next
+**/dist
+**/.turbo
+**/.cache
+**/.env*.local
+**/coverage
+
+# Keep package files
+!**/package.json
+!**/pnpm-lock.yaml
+
+# Keep configs
+!**/tsconfig.json
+!**/next.config.*
+!**/tailwind.config.*
+
+# Logs
+**/*.log
+
+# OS
+**/.DS_Store
+**/Thumbs.db
+
+# Credentials
+**/creds/**
+*.pem
+
+# Build artifacts
+out
+build

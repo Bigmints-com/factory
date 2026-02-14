@@ -1,0 +1,1 @@
+/Users/pretheesh/Projects/saveaday/.agent/rules/architecture.md

@@ -1,0 +1,84 @@
+{
+    "compilerOptions": {
+        "target": "ES2017",
+        "lib": [
+            "dom",
+            "dom.iterable",
+            "esnext"
+        ],
+        "allowJs": true,
+        "skipLibCheck": true,
+        "strict": true,
+        "noEmit": true,
+        "esModuleInterop": true,
+        "module": "esnext",
+        "moduleResolution": "bundler",
+        "resolveJsonModule": true,
+        "isolatedModules": true,
+        "jsx": "react-jsx",
+        "incremental": true,
+        "plugins": [
+            {
+                "name": "next"
+            }
+        ],
+        "paths": {
+            "@/*": [
+                "./src/*"
+            ],
+            "@saveaday/shared-auth": [
+                "../../packages/shared-auth/src"
+            ],
+            "@saveaday/shared-auth/*": [
+                "../../packages/shared-auth/src/*"
+            ],
+            "@saveaday/shared-firebase": [
+                "../../packages/shared-firebase/src"
+            ],
+            "@saveaday/shared-firebase/*": [
+                "../../packages/shared-firebase/src/*"
+            ],
+            "@saveaday/shared-ui": [
+                "../../packages/shared-ui/src"
+            ],
+            "@saveaday/shared-ui/*": [
+                "../../packages/shared-ui/src/*"
+            ],
+            "@saveaday/shared-utils": [
+                "../../packages/shared-utils/src"
+            ],
+            "@saveaday/shared-utils/*": [
+                "../../packages/shared-utils/src/*"
+            ],
+            "@saveaday/shared-types": [
+                "../../packages/shared-types/src"
+            ],
+            "@saveaday/shared-types/*": [
+                "../../packages/shared-types/src/*"
+            ],
+            "@saveaday/llm-config": [
+                "../../packages/llm-config/src"
+            ],
+            "@saveaday/llm-config/*": [
+                "../../packages/llm-config/src/*"
+            ],
+            "@saveaday/integrations": [
+                "../../packages/integrations/src"
+            ],
+            "@saveaday/integrations/*": [
+                "../../packages/integrations/src/*"
+            ]
+        }
+    },
+    "include": [
+        "next-env.d.ts",
+        "**/*.ts",
+        "**/*.tsx",
+        ".next/types/**/*.ts",
+        ".next/dev/types/**/*.ts",
+        "**/*.mts"
+    ],
+    "exclude": [
+        "node_modules"
+    ]
+}

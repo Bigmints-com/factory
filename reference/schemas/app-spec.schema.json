@@ -1,0 +1,272 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "SaveADay App Spec",
+    "description": "Specification for scaffolding a new SaveADay app",
+    "type": "object",
+    "required": [
+        "apiVersion",
+        "kind",
+        "status",
+        "metadata",
+        "deployment",
+        "database",
+        "api"
+    ],
+    "properties": {
+        "apiVersion": {
+            "type": "string",
+            "const": "saveaday/v1"
+        },
+        "kind": {
+            "type": "string",
+            "const": "AppSpec"
+        },
+        "status": {
+            "type": "string",
+            "enum": [
+                "draft",
+                "ready",
+                "in-progress",
+                "validation",
+                "review",
+                "done"
+            ]
+        },
+        "metadata": {
+            "type": "object",
+            "required": [
+                "name",
+                "slug",
+                "description",
+                "icon",
+                "color",
+                "group"
+            ],
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Human-readable app name"
+                },
+                "slug": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]*$",
+                    "description": "URL-safe identifier"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "icon": {
+                    "type": "string",
+                    "description": "Emoji icon"
+                },
+                "color": {
+                    "type": "string",
+                    "description": "Tailwind color name (e.g., emerald, blue, violet)"
+                },
+                "brandAccent": {
+                    "type": "string",
+                    "pattern": "^#[0-9a-fA-F]{6}$",
+                    "description": "Hex color for brand accent"
+                },
+                "group": {
+                    "type": "string",
+                    "enum": [
+                        "superapp",
+                        "infrastructure",
+                        "independent"
+                    ]
+                }
+            }
+        },
+        "deployment": {
+            "type": "object",
+            "required": [
+                "port",
+                "region"
+            ],
+            "properties": {
+                "port": {
+                    "type": "integer",
+                    "minimum": 3000,
+                    "maximum": 9999
+                },
+                "region": {
+                    "type": "string",
+                    "default": "europe-west1"
+                },
+                "customDomain": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9.-]+\\.saveaday\\.ai$"
+                }
+            }
+        },
+        "database": {
+            "type": "object",
+            "required": [
+                "firestoreId",
+                "collections"
+            ],
+            "properties": {
+                "firestoreId": {
+                    "type": "string"
+                },
+                "collections": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "minItems": 1
+                }
+            }
+        },
+        "api": {
+            "type": "object",
+            "required": [
+                "resources"
+            ],
+            "properties": {
+                "resources": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": [
+                            "name",
+                            "collection",
+                            "fields"
+                        ],
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Singular resource name"
+                            },
+                            "collection": {
+                                "type": "string",
+                                "description": "Firestore collection name"
+                            },
+                            "searchFields": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                }
+                            },
+                            "fields": {
+                                "type": "object",
+                                "additionalProperties": {
+                                    "type": "object",
+                                    "required": [
+                                        "type"
+                                    ],
+                                    "properties": {
+                                        "type": {
+                                            "type": "string",
+                                            "enum": [
+                                                "string",
+                                                "number",
+                                                "boolean",
+                                                "array",
+                                                "object"
+                                            ]
+                                        },
+                                        "required": {
+                                            "type": "boolean",
+                                            "default": false
+                                        },
+                                        "default": {},
+                                        "description": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "minItems": 1
+                }
+            }
+        },
+        "features": {
+            "type": "object",
+            "properties": {
+                "publicPage": {
+                    "type": "boolean",
+                    "default": true
+                },
+                "connections": {
+                    "type": "boolean",
+                    "default": false
+                },
+                "embed": {
+                    "type": "boolean",
+                    "default": false
+                }
+            }
+        },
+        "publicPage": {
+            "type": "object",
+            "properties": {
+                "hero": {
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string"
+                        },
+                        "subtitle": {
+                            "type": "string"
+                        }
+                    }
+                },
+                "features": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": [
+                            "icon",
+                            "title",
+                            "description"
+                        ],
+                        "properties": {
+                            "icon": {
+                                "type": "string"
+                            },
+                            "title": {
+                                "type": "string"
+                            },
+                            "description": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "minItems": 3,
+                    "maxItems": 6
+                },
+                "faqs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": [
+                            "q",
+                            "a"
+                        ],
+                        "properties": {
+                            "q": {
+                                "type": "string"
+                            },
+                            "a": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "minItems": 2,
+                    "maxItems": 8
+                }
+            }
+        },
+        "acceptance": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            },
+            "description": "Machine-readable acceptance criteria"
+        }
+    }
+}

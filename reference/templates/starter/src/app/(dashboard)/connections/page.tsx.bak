@@ -1,0 +1,78 @@
+'use client';
+
+import { useState } from 'react';
+import { Button, Icon, PageHeader } from '@saveaday/shared-ui';
+import { ConnectionsList, CreateConnectionModal } from '@saveaday/integrations';
+
+export default function ConnectionsPage() {
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  const refreshList = () => setRefreshKey(prev => prev + 1);
+
+  const handleToggle = async (connectionId: string, currentActive: boolean) => {
+    try {
+      const response = await fetch(`/api/v1/connections/${connectionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: !currentActive })
+      });
+    } catch (error) {
+      console.error('Failed to toggle connection:', error);
+    }
+  };
+
+  const handleDelete = async (connectionId: string) => {
+    if (!confirm('Are you sure you want to delete this connection?')) {
+      return;
+    }
+    try {
+      const response = await fetch(`/api/v1/connections/${connectionId}`, {
+        method: 'DELETE'
+      });
+    } catch (error) {
+      console.error('Failed to delete connection:', error);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="Connections"
+        description="Manage your integrations and webhooks.">
+        <Button onClick={() => setIsModalOpen(true)}>
+          <Icon name="plus" size="sm" />
+          New Connection
+        </Button>
+      </PageHeader>
+
+      <div className="mt-6">
+        <ConnectionsList
+          key={refreshKey}
+          appId="starter"
+          onToggle={async (id, active) => {
+            await handleToggle(id, active);
+            refreshList();
+          }}
+          onDelete={async (id) => {
+            await handleDelete(id);
+            refreshList();
+          }}
+        />
+      </div>
+
+      {isModalOpen && (
+        <CreateConnectionModal
+          appId="starter"
+          onClose={() => setIsModalOpen(false)}
+          onSave={() => {
+            refreshList();
+            setIsModalOpen(false);
+          }}
+          scopes={[]}
+          scopeLabel="Service"
+        />
+      )}
+    </div>
+  );
+}

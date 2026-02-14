@@ -1,0 +1,36 @@
+{
+    "metadata": {
+        "name": "Starter Template",
+        "displayName": "Starter Template",
+        "slug": "starter",
+        "description": "Template for creating new SaveADay apps",
+        "icon": "🚀",
+        "color": "blue",
+        "group": "superapp"
+    },
+    "deployment": {
+        "projectId": "dvizfb",
+        "serviceName": "starter-platform",
+        "region": "us-central1",
+        "customDomain": "starter.saveaday.ai",
+        "port": 3099
+    },
+    "firestore": {
+        "databaseId": "starter",
+        "collections": [
+            "items",
+            "settings"
+        ]
+    },
+    "routes": {
+        "public": [
+            "/api/public/*",
+            "/embed/*"
+        ],
+        "protected": [
+            "/dashboard/*",
+            "/items/*",
+            "/settings/*"
+        ]
+    }
+}

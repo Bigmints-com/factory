@@ -1,0 +1,30 @@
+@import "../../../../packages/shared-ui/src/design-system/theme.css";
+@source "../../../../packages/shared-ui/src/**/*.{js,ts,jsx,tsx}";
+
+@theme {
+  --color-brand-accent: #3b82f6;
+  /* Blue */
+}
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+}
+
+body {
+  background: #ffffff;
+  color: #171717;
+}
+
+/* Status colors */
+:root {
+  --color-success: #10b981;
+  --color-danger: #ef4444;
+  --color-warning: #f59e0b;
+  --color-info: #3b82f6;
+}
