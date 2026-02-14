@@ -31,7 +31,7 @@ import { customizeApp } from './customize.ts';
 import { validateSpec, validateOutput, printValidation } from './validate.ts';
 import { generatePatches } from './patch.ts';
 import { generateReport } from './report.ts';
-import { syncFromMonorepo } from './sync.ts';
+import { syncFromRepo } from './sync.ts';
 import { PATHS, loadSpec, log } from './utils.ts';
 import { validateFeatureSpec, printFeatureValidation } from './feature-validate.ts';
 import { scaffoldFeature, generateFeatureReport } from './feature-scaffold.ts';
@@ -81,7 +81,7 @@ async function main(): Promise<void> {
 function requireTarget(cmd: string): void {
     if (!target) {
         console.error(`Error: ${cmd} requires an argument.`);
-        console.error(`Usage: factory ${cmd} <${cmd === 'sync' ? 'monorepo-path' : cmd === 'validate-output' ? 'slug' : 'spec.yaml'}>`);
+        console.error(`Usage: factory ${cmd} <${cmd === 'sync' ? 'repo-path' : cmd === 'validate-output' ? 'slug' : 'spec.yaml'}>`);
         process.exit(1);
     }
 }
@@ -157,12 +157,12 @@ function handleReport(specPath?: string): void {
     generateReport(spec, combined);
 }
 
-function handleSync(monorepoPath?: string): void {
+function handleSync(repoPath?: string): void {
     requireTarget('sync');
-    const absPath = resolve(monorepoPath!);
+    const absPath = resolve(repoPath!);
 
     log('●', `Syncing reference from ${absPath}...`);
-    syncFromMonorepo(absPath);
+    syncFromRepo(absPath);
 }
 
 function handleStatus(): void {

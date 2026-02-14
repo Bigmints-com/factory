@@ -29,9 +29,9 @@ export function generateReport(spec: AppSpec, validation: ValidationResult): Bui
         patchesGenerated,
         validation,
         nextSteps: [
-            `Copy output/${spec.metadata.slug}/ into monorepo at apps/${spec.metadata.slug}/`,
+            `Copy output/${spec.metadata.slug}/ into your project at apps/${spec.metadata.slug}/`,
             'Apply patches from patches/ directory (see patches/APPLY.md)',
-            'Run pnpm install in monorepo root',
+            'Run pnpm install in project root',
             `Run pnpm build --filter @saveaday/${spec.metadata.slug}`,
             'Create .env.local from .env.example',
             `Start with pnpm dev --filter @saveaday/${spec.metadata.slug}`,

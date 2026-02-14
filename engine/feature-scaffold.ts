@@ -549,7 +549,7 @@ ${spec.navigation ? `Add to sidebar navigation for \`${targetApp}\`:
 ## Step 3: Verify
 
 \`\`\`bash
-cd /path/to/monorepo
+cd /path/to/your-project
 pnpm build --filter @saveaday/${targetApp}
 pnpm dev --filter @saveaday/${targetApp}
 \`\`\`

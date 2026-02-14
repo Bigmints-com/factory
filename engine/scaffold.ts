@@ -25,7 +25,7 @@ export function scaffoldApp(spec: AppSpec): string {
     if (!existsSync(templateDir)) {
         throw new Error(
             `Starter template not found at ${templateDir}.\n` +
-            `Run 'factory sync <monorepo-path>' first to pull the template.`
+            `Run 'factory sync <repo-path>' first to pull the template.`
         );
     }
 

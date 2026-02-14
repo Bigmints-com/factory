@@ -386,9 +386,9 @@ function generateDeployScript(outputDir: string, spec: AppSpec): void {
 # Deploy ${spec.metadata.name} to Cloud Run
 set -e
 
-# Resolve monorepo root
+# Resolve project root
 SCRIPT_DIR="$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
-MONOREPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 APP_NAME="${spec.metadata.slug}"
 PROJECT_ID="dvizfb"
@@ -403,7 +403,7 @@ docker build \\
     --platform linux/amd64 \\
     -t "$IMAGE" \\
     -f "$SCRIPT_DIR/Dockerfile" \\
-    "$MONOREPO_ROOT"
+    "$PROJECT_ROOT"
 
 # Push to GCR
 docker push "$IMAGE"

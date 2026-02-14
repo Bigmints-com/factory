@@ -26,20 +26,20 @@ const SKIP_TEMPLATE = new Set([
  * Sync the factory reference from a repo path.
  * Prefers .factory/factory.yaml if available.
  */
-export function syncFromMonorepo(monorepoPath: string): void {
-    if (!existsSync(monorepoPath)) {
-        throw new Error(`Repo not found at: ${monorepoPath}`);
+export function syncFromRepo(repoPath: string): void {
+    if (!existsSync(repoPath)) {
+        throw new Error(`Repo not found at: ${repoPath}`);
     }
 
-    log('●', `Syncing from ${monorepoPath}...`);
+    log('●', `Syncing from ${repoPath}...`);
 
-    if (hasBridge(monorepoPath)) {
+    if (hasBridge(repoPath)) {
         log('●', 'Using .factory/factory.yaml manifest');
-        const config = loadBridgeConfig(monorepoPath);
-        syncFromBridge(monorepoPath, config);
+        const config = loadBridgeConfig(repoPath);
+        syncFromBridge(repoPath, config);
     } else {
         log('●', 'No .factory bridge found — using legacy scan');
-        syncLegacy(monorepoPath);
+        syncLegacy(repoPath);
     }
 
     // Always regenerate ports.json
@@ -127,25 +127,25 @@ function syncFromBridge(repoPath: string, config: BridgeConfig): void {
 
 // ─── Legacy scan (backward compat) ────────────────────────
 
-function syncLegacy(monorepoPath: string): void {
-    // Verify it's the right repo
-    const appsJsonPath = join(monorepoPath, 'apps.json');
+function syncLegacy(repoPath: string): void {
+    // Verify it has the expected structure
+    const appsJsonPath = join(repoPath, 'apps.json');
     if (!existsSync(appsJsonPath)) {
-        throw new Error(`Not a SaveADay monorepo: missing apps.json at ${monorepoPath}`);
+        throw new Error(`Missing apps.json at ${repoPath}`);
     }
 
-    syncTemplateLegacy(monorepoPath);
-    syncRegistryLegacy(monorepoPath);
-    syncConventionsLegacy(monorepoPath);
-    syncSkillsLegacy(monorepoPath);
+    syncTemplateLegacy(repoPath);
+    syncRegistryLegacy(repoPath);
+    syncConventionsLegacy(repoPath);
+    syncSkillsLegacy(repoPath);
 }
 
-function syncTemplateLegacy(monorepoPath: string): void {
-    const starterPath = join(monorepoPath, 'apps', 'starter');
+function syncTemplateLegacy(repoPath: string): void {
+    const starterPath = join(repoPath, 'apps', 'starter');
     const destPath = resolve(PATHS.templates, 'starter');
 
     if (!existsSync(starterPath)) {
-        log('!', 'Warning: apps/starter not found in monorepo');
+        log('!', 'Warning: apps/starter not found in repo');
         return;
     }
 
@@ -157,8 +157,8 @@ function syncTemplateLegacy(monorepoPath: string): void {
     log('✓', 'Synced starter template');
 }
 
-function syncRegistryLegacy(monorepoPath: string): void {
-    const appsJsonPath = join(monorepoPath, 'apps.json');
+function syncRegistryLegacy(repoPath: string): void {
+    const appsJsonPath = join(repoPath, 'apps.json');
     const destPath = resolve(PATHS.registry, 'apps.json');
 
     ensureDir(PATHS.registry);
@@ -166,11 +166,11 @@ function syncRegistryLegacy(monorepoPath: string): void {
     log('✓', 'Synced apps.json registry');
 }
 
-function syncConventionsLegacy(monorepoPath: string): void {
-    const rulesDir = join(monorepoPath, '.agent', 'rules');
+function syncConventionsLegacy(repoPath: string): void {
+    const rulesDir = join(repoPath, '.agent', 'rules');
 
     if (!existsSync(rulesDir)) {
-        log('!', 'Warning: .agent/rules not found in monorepo');
+        log('!', 'Warning: .agent/rules not found in repo');
         return;
     }
 
@@ -181,7 +181,7 @@ function syncConventionsLegacy(monorepoPath: string): void {
         cpSync(join(rulesDir, file), join(PATHS.conventions, file));
     }
 
-    const agentsPath = join(monorepoPath, 'AGENTS.md');
+    const agentsPath = join(repoPath, 'AGENTS.md');
     if (existsSync(agentsPath)) {
         cpSync(agentsPath, join(PATHS.conventions, 'AGENTS.md'));
     }
@@ -189,8 +189,8 @@ function syncConventionsLegacy(monorepoPath: string): void {
     log('✓', `Synced ${ruleFiles.length} convention files`);
 }
 
-function syncSkillsLegacy(monorepoPath: string): void {
-    const appsDir = join(monorepoPath, 'apps');
+function syncSkillsLegacy(repoPath: string): void {
+    const appsDir = join(repoPath, 'apps');
     if (!existsSync(appsDir)) return;
 
     ensureDir(PATHS.skills);

@@ -1,8 +1,8 @@
 /**
- * Patch generator — produces integration files that need to be applied to the monorepo.
+ * Patch generator — produces integration files for the target project.
  *
  * These files are NOT applied automatically. They're placed in output/{slug}/patches/
- * for the user to review and copy into the monorepo.
+ * for the user to review and copy into the target project.
  */
 
 import { resolve, join } from 'node:path';
@@ -186,14 +186,14 @@ start_project "${spec.metadata.slug}" ${spec.deployment.port}
 function generateApplyInstructions(patchDir: string, spec: AppSpec): void {
     const content = `# How to Apply Patches for ${spec.metadata.name}
 
-These patches integrate the new app into the SaveADay monorepo.
+These patches integrate the new app into your project.
 Apply them in order after copying the app to \`apps/${spec.metadata.slug}/\`.
 
 ## Step 1: Copy App
 \`\`\`bash
-cp -r output/${spec.metadata.slug}/ /path/to/saveaday/apps/${spec.metadata.slug}/
+cp -r output/${spec.metadata.slug}/ /path/to/your-project/apps/${spec.metadata.slug}/
 # Remove the patches directory from the copied app
-rm -rf /path/to/saveaday/apps/${spec.metadata.slug}/patches/
+rm -rf /path/to/your-project/apps/${spec.metadata.slug}/patches/
 \`\`\`
 
 ## Step 2: Register in apps.json
@@ -219,7 +219,7 @@ Add the line from \`patch-start-all.sh\` to \`scripts/start-all.sh\`.
 
 ## Step 7: Install & Build
 \`\`\`bash
-cd /path/to/saveaday
+cd /path/to/your-project
 pnpm install
 pnpm build --filter @saveaday/${spec.metadata.slug}
 \`\`\`
