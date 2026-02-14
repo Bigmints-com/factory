@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "SaveADay Factory",
-  description: "Autonomous app scaffolding factory for the SaveADay monorepo",
+  description: "Autonomous app scaffolding and feature generation factory",
 };
 
 export default function RootLayout({

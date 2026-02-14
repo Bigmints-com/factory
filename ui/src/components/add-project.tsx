@@ -197,7 +197,7 @@ export function AddProject({ onProjectAdded }: AddProjectProps) {
           <CardContent className="py-5 px-5 space-y-4">
             {projects.length === 0 && (
               <p className="text-sm text-muted-foreground">
-                Paste the path to your monorepo or application directory.
+                Paste the path to your project or application directory.
                 The factory will create a <code className="rounded bg-muted px-1.5 py-0.5 text-[11px]">.factory</code> bridge folder.
               </p>
             )}
