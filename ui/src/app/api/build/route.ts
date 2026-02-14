@@ -19,7 +19,7 @@ export async function POST(request: Request) {
     const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
     const result = stripAnsi(execSync(
       `npx tsx engine/cli.ts build "${specPath}" 2>&1`,
-      { cwd: FACTORY_ROOT, encoding: 'utf-8', timeout: 60000 }
+      { cwd: FACTORY_ROOT, encoding: 'utf-8', timeout: 180000 }
     ));
 
     const success = result.includes('BUILD COMPLETE');

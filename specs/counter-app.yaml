@@ -1,0 +1,28 @@
+apiVersion: saveaday/v1
+kind: AppSpec
+status: ready
+
+metadata:
+  name: Counter App
+  slug: counter_app
+  description: A simple counter application with increment, decrement, and reset
+  icon: Hash
+  color: "#6366f1"
+  group: independent
+
+deployment:
+  port: 3050
+  region: us-central1
+
+database:
+  firestoreId: counter-app
+  collections: [counters]
+
+api:
+  resources:
+    - name: counter
+      collection: counters
+      fields:
+        name: { type: string, required: true }
+        value: { type: number, default: 0 }
+        color: { type: string, default: "#6366f1" }

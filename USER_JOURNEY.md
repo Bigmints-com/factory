@@ -31,6 +31,7 @@ Before generating anything, you connect your target project to the Factory.
    your-repo/
    └── .factory/
        ├── factory.yaml       ← Manifest: what the repo exposes
+       ├── agents.md          ← Agent instructions for this folder
        └── specs/
            ├── apps/          ← Your app spec YAMLs go here
            └── features/      ← Your feature spec YAMLs go here

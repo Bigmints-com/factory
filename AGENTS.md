@@ -52,7 +52,7 @@ YAML files that declaratively describe apps or features. Located in `specs/apps/
 
 ### Bridge
 
-The `.factory/` folder created inside a connected project repo. Contains `factory.yaml` (manifest) and `specs/` subdirectories. This is the contract between the factory and the target repo.
+The `.factory/` folder created inside a connected project repo. Contains `factory.yaml` (manifest), `agents.md` (AI agent instructions), and `specs/` subdirectories. This is the contract between the factory and the target repo.
 
 ### Build Pipeline
 

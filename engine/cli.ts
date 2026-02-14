@@ -32,6 +32,7 @@ import { validateSpec, validateOutput, printValidation } from './validate.ts';
 import { generatePatches } from './patch.ts';
 import { generateReport } from './report.ts';
 import { syncFromRepo } from './sync.ts';
+import { generateWithLLM } from './llm-generate.ts';
 import { PATHS, loadSpec, log } from './utils.ts';
 import { validateFeatureSpec, printFeatureValidation } from './feature-validate.ts';
 import { scaffoldFeature, generateFeatureReport } from './feature-scaffold.ts';
@@ -65,7 +66,7 @@ async function main(): Promise<void> {
         case 'status':
             return handleStatus();
         case 'build':
-            return handleBuild(target);
+            return await handleBuild(target);
         case 'feature':
             return handleFeature(target, args[2]);
         case 'init-bridge':
@@ -211,7 +212,7 @@ function handleStatus(): void {
     console.log('');
 }
 
-function handleBuild(specPath?: string): void {
+async function handleBuild(specPath?: string): Promise<void> {
     requireTarget('build');
     const spec = loadSpec(specPath!);
 
@@ -220,7 +221,7 @@ function handleBuild(specPath?: string): void {
     console.log('');
 
     // Step 1: Validate spec
-    log('●', '[1/5] Validating spec...');
+    log('●', '[1/4] Validating spec...');
     const specValidation = validateSpec(spec);
     if (!specValidation.passed) {
         log('✗', 'Spec validation failed:');
@@ -230,23 +231,30 @@ function handleBuild(specPath?: string): void {
     log('✓', 'Spec is valid.');
     console.log('');
 
-    // Step 2: Scaffold
-    log('●', '[2/5] Scaffolding app...');
-    const outputDir = scaffoldApp(spec);
+    // Step 2: Generate app — LLM or template
+    const hasTemplate = existsSync(resolve(PATHS.templates, 'starter'));
+    let outputDir: string;
+
+    if (hasTemplate) {
+        log('●', '[2/4] Scaffolding from template...');
+        outputDir = scaffoldApp(spec);
+        console.log('');
+
+        log('●', '[3/4] Customizing app...');
+        customizeApp(outputDir, spec);
+    } else {
+        log('●', '[2/4] Generating app with AI...');
+        const result = await generateWithLLM(spec);
+        outputDir = result.outputDir;
+        log('✓', `Generated ${result.files.length} files using ${result.provider}/${result.model}`);
+        console.log('');
+
+        log('●', '[3/4] Skipping template patches (LLM-generated)...');
+    }
     console.log('');
 
-    // Step 3: Customize
-    log('●', '[3/5] Customizing app...');
-    customizeApp(outputDir, spec);
-    console.log('');
-
-    // Step 4: Generate patches
-    log('●', '[4/5] Generating patches...');
-    generatePatches(spec);
-    console.log('');
-
-    // Step 5: Validate output + generate report
-    log('●', '[5/5] Validating output & generating report...');
+    // Step 4: Generate report
+    log('●', '[4/4] Generating report...');
     const outputValidation = validateOutput(spec.metadata.slug);
     const combined = {
         passed: outputValidation.passed && specValidation.passed,
@@ -263,7 +271,9 @@ function handleBuild(specPath?: string): void {
         log('!', `BUILD COMPLETE WITH WARNINGS: ${spec.metadata.name}`);
     }
     log('→', `Output: output/${spec.metadata.slug}/`);
-    log('→', `Patches: output/${spec.metadata.slug}/patches/`);
+    if (hasTemplate) {
+        log('→', `Patches: output/${spec.metadata.slug}/patches/`);
+    }
     log('→', `Report: reports/${spec.metadata.slug}-*.md`);
     console.log('');
 }

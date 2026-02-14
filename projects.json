@@ -1,11 +1,17 @@
 {
-  "activeProject": "saveaday-monorepo",
+  "activeProject": "agent-test",
   "projects": [
     {
       "id": "saveaday-monorepo",
       "name": "saveaday-monorepo",
       "path": "/Users/pretheesh/Projects/saveaday",
       "addedAt": "2026-02-14T10:11:24.788Z"
+    },
+    {
+      "id": "agent-test",
+      "name": "agent-test",
+      "path": "/Users/pretheesh/Projects/agent-test",
+      "addedAt": "2026-02-14T11:10:16.535Z"
     }
   ]
 }
