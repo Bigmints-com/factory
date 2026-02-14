@@ -45,6 +45,14 @@ export async function runPipeline(
         logStep(1, 5, 'Planning build...');
         plan = await planBuild(spec, context, provider, model);
         log('✓', `Plan: ${plan.files.length} files, ${plan.decisions.length} decisions`);
+        // Log planned files
+        for (const f of plan.files) {
+            log('→', `  ${f}`);
+        }
+        // Log architecture decisions
+        for (const d of plan.decisions.slice(0, 5)) {
+            log('→', `  Decision: ${d}`);
+        }
     } else {
         logStep(1, 5, 'Skipping plan (not needed for this task type)');
         plan = {
@@ -57,8 +65,15 @@ export async function runPipeline(
 
     // Step 2: Build (first attempt)
     logStep(2, 5, 'Generating code...');
+    log('→', `Sending prompt to ${provider.name} (${model})...`);
     let files = await executeBuild(spec, context, plan, provider, model);
     log('✓', `Generated ${files.length} files`);
+
+    // Log generated file groups
+    const filesByDir = groupFilesByDirectory(files);
+    for (const [dir, count] of Object.entries(filesByDir)) {
+        log('→', `  ${dir}/ — ${count} file(s)`);
+    }
 
     // Step 3+4: Test → Iterate loop (gated by profile)
     let iteration = 0;
@@ -205,11 +220,13 @@ async function executeBuild(
 ): Promise<GeneratedFile[]> {
     const prompt = buildAppPrompt(spec, context, plan);
 
-    log('  ', `  Prompt: ${prompt.length} chars`);
+    log('→', `Prompt: ${prompt.length.toLocaleString()} chars`);
+    log('→', `Calling ${provider.name}...`);
 
     const raw = await callProvider(provider, model, prompt);
-    log('✓', `Response received (${raw.length} chars)`);
+    log('✓', `Response received (${raw.length.toLocaleString()} chars)`);
 
+    log('→', `Parsing generated files...`);
     const files = parseGeneratedFiles(raw);
     if (files.length === 0) {
         throw new Error(
@@ -218,7 +235,27 @@ async function executeBuild(
         );
     }
 
+    // Log each generated file
+    for (const f of files) {
+        const size = f.content.length;
+        const sizeLabel = size > 1024 ? `${(size / 1024).toFixed(1)}KB` : `${size}B`;
+        log('→', `  ${f.filename} (${sizeLabel})`);
+    }
+
     return files;
+}
+
+/**
+ * Group files by their top-level directory for summary logging.
+ */
+function groupFilesByDirectory(files: GeneratedFile[]): Record<string, number> {
+    const groups: Record<string, number> = {};
+    for (const f of files) {
+        const parts = f.filename.split('/');
+        const dir = parts.length > 1 ? parts[0] : '.';
+        groups[dir] = (groups[dir] || 0) + 1;
+    }
+    return groups;
 }
 
 // ─── Test ────────────────────────────────────────────────
