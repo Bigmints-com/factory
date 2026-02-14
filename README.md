@@ -1,48 +1,43 @@
 # SaveADay Factory
 
-Autonomous app scaffolding factory for the SaveADay monorepo.
+Autonomous app scaffolding and feature generation factory.
 
-This is a **standalone project** that produces new apps by reading spec files and applying them to a structured reference of monorepo patterns. It never modifies the monorepo directly.
+A **standalone project** that generates production-ready apps and features from declarative YAML specs. It scaffolds, customises, validates, generates integration patches, and produces build reports — all autonomously.
 
 ## Quick Start
 
 ```bash
 npm install
-npm run factory -- status          # Show spec queue
-npm run factory -- scaffold specs/invoices.yaml   # Scaffold an app
-npm run factory -- validate specs/invoices.yaml   # Validate a spec
-npm run factory -- validate-output invoices        # Validate generated output
-npm run factory -- patch specs/invoices.yaml       # Generate integration patches
-npm run factory -- report invoices                 # Generate build report
-npm run factory -- sync /path/to/saveaday          # Sync reference from monorepo
+./start.sh                                          # Start UI at localhost:4040
+
+# CLI
+npx tsx engine/cli.ts status                        # Show spec queue
+npx tsx engine/cli.ts build specs/apps/myapp.yaml   # Full build pipeline
+npx tsx engine/cli.ts validate specs/apps/myapp.yaml # Validate a spec
+npx tsx engine/cli.ts feature-build specs/features/myfeat.yaml  # Build a feature
 ```
 
 ## Architecture
 
 ```
 saveaday-factory/
-├── reference/    ← Portable snapshot of monorepo patterns
-├── specs/        ← Task queue (YAML spec files)
-├── engine/       ← CLI + scaffolding + validation logic
+├── engine/       ← Core build engine (TypeScript CLI)
+├── specs/        ← YAML spec files (apps + features)
+├── ui/           ← Next.js dashboard (port 4040)
 ├── output/       ← Generated apps (gitignored)
-└── reports/      ← Build reports
+└── reports/      ← Build reports (gitignored)
 ```
 
 ## Workflow
 
-1. **Define**: Write a spec YAML in `specs/`
-2. **Scaffold**: `npm run scaffold specs/your-app.yaml`
-3. **Review**: Check `output/your-app/` for the generated app
-4. **Copy**: Move `output/your-app/` into the monorepo's `apps/` directory
-5. **Patch**: Apply files from `output/your-app/patches/` to integrate
-6. **Build**: Run `pnpm install && pnpm build` in the monorepo
+1. **Connect**: Add your project via UI or `factory project add /path/to/repo`
+2. **Define**: Write a spec YAML in `specs/`
+3. **Build**: Run the build pipeline (validate → scaffold → customise → patch → report)
+4. **Review**: Check `output/your-app/` for the generated app
+5. **Apply**: Copy output into your project, follow `patches/APPLY.md` to integrate
 
-## Syncing Reference
+## Documentation
 
-To update the reference from the monorepo:
-
-```bash
-npm run sync /path/to/saveaday
-```
-
-This pulls the latest starter template, registry, and convention files.
+- [USER_JOURNEY.md](USER_JOURNEY.md) — End-to-end walkthrough
+- [SKILL.md](SKILL.md) — Commands, spec formats, output structure
+- [AGENTS.md](AGENTS.md) — Project structure, conventions, common tasks

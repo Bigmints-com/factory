@@ -112,7 +112,7 @@ pages:
 All generated files go to `output/<slug>/`:
 
 - App source code (ready to copy into `apps/<slug>/`)
-- `patches/` — integration files for the monorepo
+- `patches/` — integration files for the target project
 - `patches/APPLY.md` — step-by-step apply guide
 
 Reports go to `reports/<slug>-<timestamp>.md`.

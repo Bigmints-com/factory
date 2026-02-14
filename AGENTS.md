@@ -9,7 +9,7 @@ saveaday-factory/
 │   ├── scaffold.ts   ← Copy starter template
 │   ├── customize.ts  ← Rewrite files from spec
 │   ├── validate.ts   ← Schema + output validation
-│   ├── patch.ts      ← Monorepo integration patches
+│   ├── patch.ts      ← Project integration patches
 │   ├── report.ts     ← Markdown build reports
 │   ├── feature-scaffold.ts  ← Feature generation
 │   ├── feature-validate.ts  ← Feature spec validation
@@ -18,7 +18,7 @@ saveaday-factory/
 │   ├── queue.ts      ← Build queue (SQLite)
 │   ├── db.ts         ← Database connection
 │   ├── knowledge.ts  ← Knowledge/conventions reader
-│   ├── sync.ts       ← Reference sync from monorepo
+│   ├── sync.ts       ← Reference sync from project
 │   ├── git.ts        ← Git operations
 │   ├── utils.ts      ← Shared utilities
 │   └── types.ts      ← TypeScript type definitions

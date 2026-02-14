@@ -18,13 +18,13 @@ graph LR
 
 ## Phase 1: Connect Your Project
 
-Before generating anything, you connect your target monorepo to the Factory.
+Before generating anything, you connect your target project to the Factory.
 
 ### What happens
 
 1. **Add project** — Via the UI (Projects page) or CLI:
    ```
-   factory project add /path/to/your/monorepo
+   factory project add /path/to/your/project
    ```
 2. **Bridge init** — The Factory scans your repo and creates a `.factory/` folder:
    ```
@@ -154,11 +154,11 @@ Rewrites **every** template file with spec-specific values:
 
 #### ④ Generate Patches → `patch.ts`
 
-Creates files that integrate the new app into the monorepo (placed in `output/<slug>/patches/`):
+Creates files that integrate the new app into the target project (placed in `output/<slug>/patches/`):
 
 | Patch                  | Purpose                                            |
 | ---------------------- | -------------------------------------------------- |
-| `apps.json.patch`      | Adds the app to the monorepo registry              |
+| `apps.json.patch`      | Adds the app to the project registry               |
 | `app-switcher.patch`   | Adds the app to the sidebar navigation             |
 | `openapi-section.yaml` | API definition for the app's endpoints             |
 | `api-route.ts`         | Next.js API route handler for the new app          |
@@ -264,9 +264,9 @@ output/booking_app/
     └── recurring-schedule/       ← Feature files
 ```
 
-### Apply to monorepo
+### Apply to your project
 
-1. Copy `output/<slug>/` → `apps/<slug>/` in your monorepo
+1. Copy `output/<slug>/` → `apps/<slug>/` in your project
 2. Follow `patches/APPLY.md` to merge integration patches
 3. `pnpm install` → `pnpm build` → `pnpm dev`
 
