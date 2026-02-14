@@ -17,6 +17,7 @@ import { loadSettings, getActiveProvider } from './config.ts';
 import { log, logStep, logError } from './log.ts';
 
 const MAX_ITERATIONS = 3;
+const PIPELINE_TIMEOUT_MS = 4 * 60 * 1000; // 4 minutes — bail before the API route times out
 
 // ─── Main Pipeline ───────────────────────────────────────
 
@@ -31,6 +32,7 @@ export async function runPipeline(
 ): Promise<BuildResult> {
     const { provider, model } = requireActiveProvider();
     const slug = specSlug(spec);
+    const pipelineStart = Date.now();
 
     log('●', `Using ${provider.name} → ${model}`);
 
@@ -49,6 +51,13 @@ export async function runPipeline(
     let errors: string[] = [];
 
     while (iteration < MAX_ITERATIONS) {
+        // Elapsed-time guard: bail before the API route times out
+        const elapsed = Date.now() - pipelineStart;
+        if (elapsed > PIPELINE_TIMEOUT_MS) {
+            logError(`Pipeline timeout (${Math.round(elapsed / 1000)}s elapsed). Returning best effort.`);
+            break;
+        }
+
         logStep(3 + Math.min(iteration, 1), 5, iteration === 0 ? 'Testing build...' : `Iterating (attempt ${iteration + 1}/${MAX_ITERATIONS})...`);
         errors = testBuild(files, spec.stack);
 
@@ -298,7 +307,7 @@ function testBuild(files: GeneratedFile[], stack: StackConfig): string[] {
     const installCmd = packageInstallCommand(stack.packageManager);
     try {
         logStep(0, 0, `Running ${installCmd}...`);
-        execSync(installCmd, { cwd: tmpDir, stdio: 'pipe', timeout: 120_000 });
+        execSync(installCmd, { cwd: tmpDir, stdio: 'pipe', timeout: 60_000 });
         log('✓', 'Package install succeeded');
     } catch (err) {
         const msg = err instanceof Error ? (err as any).stderr?.toString() || err.message : String(err);
@@ -310,7 +319,7 @@ function testBuild(files: GeneratedFile[], stack: StackConfig): string[] {
     if (isTS) {
         try {
             logStep(0, 0, 'Running tsc --noEmit...');
-            execSync('npx tsc --noEmit', { cwd: tmpDir, stdio: 'pipe', timeout: 60_000 });
+            execSync('npx tsc --noEmit', { cwd: tmpDir, stdio: 'pipe', timeout: 30_000 });
             log('✓', 'TypeScript check passed');
         } catch (err) {
             const msg = err instanceof Error ? (err as any).stdout?.toString() || err.message : String(err);
@@ -328,7 +337,7 @@ function testBuild(files: GeneratedFile[], stack: StackConfig): string[] {
     if (lint) {
         try {
             logStep(0, 0, `Running ${stack.linter} linter...`);
-            execSync(lint, { cwd: tmpDir, stdio: 'pipe', timeout: 60_000 });
+            execSync(lint, { cwd: tmpDir, stdio: 'pipe', timeout: 30_000 });
             log('✓', 'Lint passed');
         } catch (err) {
             const msg = err instanceof Error ? (err as any).stdout?.toString() || err.message : String(err);
@@ -341,7 +350,7 @@ function testBuild(files: GeneratedFile[], stack: StackConfig): string[] {
     if (test) {
         try {
             logStep(0, 0, `Running ${stack.testing} tests...`);
-            execSync(test, { cwd: tmpDir, stdio: 'pipe', timeout: 120_000 });
+            execSync(test, { cwd: tmpDir, stdio: 'pipe', timeout: 60_000 });
             log('✓', 'Tests passed');
         } catch (err) {
             const msg = err instanceof Error ? (err as any).stdout?.toString() || err.message : String(err);
@@ -427,6 +436,10 @@ ${contextBlock}
 4. The app should work out of the box with package install + dev server
 5. Follow the conventions and patterns from the project context if provided
 6. Use modern, clean code with proper error handling
+7. CRITICAL: Every plugin/preset referenced in config files (.eslintrc, jest.config, etc.) MUST be listed in package.json devDependencies
+8. If using ESLint with TypeScript, you MUST include these devDependencies: eslint, @typescript-eslint/parser, @typescript-eslint/eslint-plugin
+9. If using Jest with TypeScript, you MUST include these devDependencies: jest, @types/jest, ts-jest
+10. Do NOT reference any package in config files that is not in package.json
 
 ## Output Format
 

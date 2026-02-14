@@ -116,7 +116,7 @@ export async function POST() {
 
         const output = stripAnsi(execSync(cmd, {
           cwd: FACTORY_ROOT,
-          timeout: 300_000, // 5 minute timeout for LLM builds
+          timeout: 600_000, // 10 minute safety net (pipeline has its own 4-min guard)
           encoding: 'utf-8',
         }));
 
