@@ -1,0 +1,68 @@
+apiVersion: saveaday/v1
+kind: FeatureSpec
+status: ready
+
+# ─── Target App ──────────────────────────
+target:
+  app: invoices # which existing app to enhance
+
+# ─── Feature Definition ──────────────────
+feature:
+  name: "Recurring Invoices"
+  slug: recurring
+  description: "Schedule invoices to auto-generate on a recurring basis"
+  icon: "RefreshCw"
+
+# ─── Pages ───────────────────────────────
+pages:
+  - route: /dashboard/recurring
+    title: "Recurring Invoices"
+    type: list
+    dataSource: recurring-schedule
+
+  - route: /dashboard/recurring/new
+    title: "New Schedule"
+    type: form
+    dataSource: recurring-schedule
+
+  - route: /dashboard/recurring/[id]
+    title: "Edit Schedule"
+    type: detail
+    dataSource: recurring-schedule
+
+# ─── Data Model ──────────────────────────
+model:
+  name: recurring-schedule
+  collection: recurring_schedules
+  fields:
+    invoiceTemplateId:
+      type: string
+      required: true
+      description: "Reference to the invoice template"
+    frequency:
+      type: string
+      required: true
+      default: "monthly"
+      description: "Recurrence frequency (daily, weekly, monthly, yearly)"
+    nextRunDate:
+      type: string
+      required: true
+      description: "ISO 8601 date of next scheduled generation"
+    active:
+      type: boolean
+      default: true
+      description: "Whether this recurring schedule is active"
+    lastRunDate:
+      type: string
+      description: "ISO 8601 date of last generation"
+    createdCount:
+      type: number
+      default: 0
+      description: "Number of invoices created by this schedule"
+
+# ─── Navigation ──────────────────────────
+navigation:
+  section: main
+  label: "Recurring"
+  icon: "RefreshCw"
+  position: "after:dashboard"

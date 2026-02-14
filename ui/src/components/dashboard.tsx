@@ -1,0 +1,809 @@
+'use client';
+
+import { useState, useEffect, useCallback } from 'react';
+import { toast } from 'sonner';
+import { Sidebar } from '@/components/sidebar';
+import { AddProject } from '@/components/add-project';
+import { SpecCard } from '@/components/spec-card';
+import { SpecEditor } from '@/components/spec-editor';
+import { BuildLog } from '@/components/build-log';
+import { ReportViewer } from '@/components/report-viewer';
+import { QueueView } from '@/components/queue-view';
+import { KnowledgeView } from '@/components/knowledge-view';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Separator } from '@/components/ui/separator';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { FileText, Package, CheckCircle2, AlertCircle, Activity, Puzzle, Server, Globe, Database, Layers, ListPlus, ListOrdered, X, PanelRight, Terminal, FolderOpen, Plug, Settings, Eye } from 'lucide-react';
+
+interface Spec {
+  file: string;
+  valid: boolean;
+  status: string;
+  metadata: Record<string, any>;
+  deployment?: Record<string, any>;
+  database?: Record<string, any>;
+  api?: Record<string, any>;
+  features?: Record<string, any>;
+}
+
+interface Report {
+  file: string;
+  slug: string;
+  timestamp: string;
+  content: string;
+  size: number;
+}
+
+interface FeatureSpecItem {
+  file: string;
+  kind: 'FeatureSpec';
+  valid: boolean;
+  status: string;
+  feature: Record<string, any>;
+  target: Record<string, any>;
+  pages: any[];
+  model: Record<string, any>;
+}
+
+interface ValidationCheck {
+  passed: boolean;
+  name: string;
+  message: string;
+}
+
+const VALID_TABS = ['dashboard', 'queue', 'specs', 'reports', 'knowledge', 'projects', 'integrations', 'settings'];
+
+function getInitialTab(): string {
+  if (typeof window !== 'undefined') {
+    const hash = window.location.hash.replace('#', '');
+    if (VALID_TABS.includes(hash)) return hash;
+  }
+  return 'dashboard';
+}
+
+export default function Dashboard() {
+  const [activeTab, setActiveTab] = useState(getInitialTab);
+  const [specs, setSpecs] = useState<Spec[]>([]);
+  const [featureSpecs, setFeatureSpecs] = useState<FeatureSpecItem[]>([]);
+  const [reports, setReports] = useState<Report[]>([]);
+  const [selectedReport, setSelectedReport] = useState<Report | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [buildOutput, setBuildOutput] = useState('');
+  const [validationResult, setValidationResult] = useState<{
+    passed: boolean;
+    checks: ValidationCheck[];
+  } | null>(null);
+  const [activeAction, setActiveAction] = useState<{
+    type: 'validate' | 'build' | 'feature-validate' | 'feature-build';
+    file: string;
+  } | null>(null);
+  const [outputPanelOpen, setOutputPanelOpen] = useState(false);
+  const [showAddProject, setShowAddProject] = useState(getInitialTab() === 'projects');
+  const [hasProjects, setHasProjects] = useState(true); // optimistic
+  const [activeProject, setActiveProject] = useState<{ id: string; name: string; path: string } | null>(null);
+  const [projectCount, setProjectCount] = useState(0);
+  const [projectRefreshKey, setProjectRefreshKey] = useState(0);
+  const [editingSpec, setEditingSpec] = useState<{ file: string; name: string } | null>(null);
+
+  const fetchSpecs = useCallback(async () => {
+    try {
+      const res = await fetch('/api/specs');
+      const data = await res.json();
+      setSpecs(data.specs || []);
+      setFeatureSpecs(data.featureSpecs || []);
+    } catch {
+      console.error('Failed to fetch specs');
+    }
+  }, []);
+
+  const fetchReports = useCallback(async () => {
+    try {
+      const res = await fetch('/api/reports');
+      const data = await res.json();
+      setReports(data.reports || []);
+      if (data.reports?.[0] && !selectedReport) {
+        setSelectedReport(data.reports[0]);
+      }
+    } catch {
+      console.error('Failed to fetch reports');
+    }
+  }, [selectedReport]);
+
+  const fetchProjects = useCallback(async () => {
+    try {
+      const res = await fetch('/api/projects');
+      const data = await res.json();
+      const projects = data.projects || [];
+      setProjectCount(projects.length);
+      setHasProjects(projects.length > 0);
+      if (!projects.length) setShowAddProject(true);
+      const active = projects.find((p: any) => p.id === data.activeId);
+      setActiveProject(active || null);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    Promise.all([fetchProjects(), fetchSpecs(), fetchReports()]).finally(() => setLoading(false));
+  }, [fetchProjects, fetchSpecs, fetchReports]);
+
+  // Sync tab to URL hash
+  useEffect(() => {
+    const tab = showAddProject ? 'projects' : activeTab;
+    window.location.hash = tab;
+  }, [activeTab, showAddProject]);
+
+  const handleValidate = async (file: string) => {
+    setActiveAction({ type: 'validate', file });
+    setValidationResult(null);
+    setBuildOutput('');
+    setOutputPanelOpen(true);
+
+    try {
+      const res = await fetch('/api/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ specFile: file }),
+      });
+      const data = await res.json();
+      setValidationResult({ passed: data.passed, checks: data.checks || [] });
+      if (data.raw) setBuildOutput(data.raw);
+      if (data.passed) {
+        toast.success('Validation passed', { description: file });
+      } else {
+        toast.error('Validation failed', { description: file });
+      }
+    } catch {
+      setValidationResult({ passed: false, checks: [{ passed: false, name: 'Error', message: 'Validation request failed' }] });
+      toast.error('Validation request failed');
+    } finally {
+      setActiveAction(null);
+    }
+  };
+
+  const handleBuild = async (file: string) => {
+    setActiveAction({ type: 'build', file });
+    setValidationResult(null);
+    setBuildOutput('Building...\n');
+    setOutputPanelOpen(true);
+
+    try {
+      const res = await fetch('/api/build', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ specFile: file }),
+      });
+      const data = await res.json();
+      setBuildOutput(data.output || data.error || 'Unknown result');
+
+      // Refresh reports after build
+      if (data.success) {
+        await fetchReports();
+        toast.success('Build completed', { description: file });
+      } else {
+        toast.error('Build failed', { description: file });
+      }
+    } catch {
+      setBuildOutput('Build request failed');
+      toast.error('Build request failed');
+    } finally {
+      setActiveAction(null);
+    }
+  };
+
+  const handleFeatureAction = async (file: string, action: 'validate' | 'build') => {
+    const actionType = action === 'validate' ? 'feature-validate' : 'feature-build';
+    setActiveAction({ type: actionType as any, file });
+    setValidationResult(null);
+    setBuildOutput(action === 'build' ? 'Building feature...\n' : '');
+    setOutputPanelOpen(true);
+
+    try {
+      const res = await fetch('/api/feature-build', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ specFile: file, action }),
+      });
+      const data = await res.json();
+      setBuildOutput(data.output || data.error || 'Unknown result');
+
+      if (data.success && action === 'build') {
+        await fetchReports();
+        toast.success('Feature build completed', { description: file });
+      } else if (data.success) {
+        toast.success('Feature validation passed', { description: file });
+      } else {
+        toast.error(`Feature ${action} failed`, { description: file });
+      }
+    } catch {
+      setBuildOutput(`Feature ${action} request failed`);
+      toast.error(`Feature ${action} failed`);
+    } finally {
+      setActiveAction(null);
+    }
+  };
+
+  const handleEnqueue = async (specFile: string, kind: string) => {
+    try {
+      const res = await fetch('/api/queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ specFile, kind }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setBuildOutput(`✓ Added "${specFile}" to build queue`);
+        toast.success('Added to queue', { description: specFile });
+        // Switch to queue tab
+        setActiveTab('queue');
+      } else {
+        setBuildOutput(`✗ ${data.error}`);
+        toast.error('Failed to enqueue', { description: data.error });
+      }
+    } catch {
+      setBuildOutput('Failed to enqueue spec');
+      toast.error('Failed to enqueue spec');
+    }
+  };
+
+  const renderDashboard = () => (
+    <div className="space-y-6">
+      {/* Active project banner */}
+      {activeProject && (
+        <Card className="border-primary/30 bg-gradient-to-r from-primary/5 to-transparent">
+          <CardContent className="flex items-center gap-4 py-5">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+              <FolderOpen className="h-6 w-6 text-primary" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-lg font-semibold">{activeProject.name}</p>
+              <p className="text-xs text-muted-foreground font-mono truncate">{activeProject.path}</p>
+            </div>
+            <Badge variant="outline" className="shrink-0 text-xs">
+              Active Project
+            </Badge>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Stats row */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <Card className="cursor-pointer hover:border-primary/30 transition-colors" onClick={() => { setShowAddProject(true); }}>
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-violet-500/10">
+                <FolderOpen className="h-5 w-5 text-violet-500" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold">{projectCount}</p>
+                <p className="text-xs text-muted-foreground">Projects</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
+                <FileText className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold">{specs.length}</p>
+                <p className="text-xs text-muted-foreground">App Specs</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-500/10">
+                <Activity className="h-5 w-5 text-orange-500" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold">{featureSpecs.length}</p>
+                <p className="text-xs text-muted-foreground">Features</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500/10">
+                <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold">{specs.filter((s) => s.status === 'ready' || s.status === 'done').length}</p>
+                <p className="text-xs text-muted-foreground">Ready</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
+                <Package className="h-5 w-5 text-blue-500" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold">{reports.length}</p>
+                <p className="text-xs text-muted-foreground">Reports</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Recent specs */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Spec Queue</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {specs.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-8 text-center">
+              No specs found. Add YAML files to the specs/ directory.
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {specs.map((spec) => (
+                <SpecCard
+                  key={spec.file}
+                  spec={spec}
+                  onValidate={handleValidate}
+                  onBuild={handleBuild}
+                  onEnqueue={handleEnqueue}
+                  isValidating={activeAction?.type === 'validate' && activeAction?.file === spec.file}
+                  isBuilding={activeAction?.type === 'build' && activeAction?.file === spec.file}
+                />
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Validation result & Build output side-by-side */}
+      {(validationResult || buildOutput) && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {validationResult && (
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center gap-2">
+                  {validationResult.passed ? (
+                    <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                  ) : (
+                    <AlertCircle className="h-4 w-4 text-destructive" />
+                  )}
+                  <CardTitle className="text-sm">
+                    Validation {validationResult.passed ? 'Passed' : 'Failed'}
+                  </CardTitle>
+                  <Badge variant={validationResult.passed ? 'default' : 'destructive'} className="ml-auto text-[10px]">
+                    {validationResult.checks.filter((c) => c.passed).length}/{validationResult.checks.length}
+                  </Badge>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-8"></TableHead>
+                      <TableHead className="text-xs">Check</TableHead>
+                      <TableHead className="text-xs">Details</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {validationResult.checks.map((check, i) => (
+                      <TableRow key={i}>
+                        <TableCell>
+                          {check.passed ? (
+                            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                          ) : (
+                            <AlertCircle className="h-3.5 w-3.5 text-destructive" />
+                          )}
+                        </TableCell>
+                        <TableCell className="text-xs font-medium">{check.name}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{check.message}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          )}
+          {buildOutput && (
+            <BuildLog
+              output={buildOutput}
+              isRunning={activeAction?.type === 'build'}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+
+  const renderSpecs = () => {
+    if (editingSpec) {
+      return (
+        <SpecEditor
+          specFile={editingSpec.file}
+          specName={editingSpec.name}
+          onClose={() => setEditingSpec(null)}
+          onSaved={() => fetchSpecs()}
+        />
+      );
+    }
+
+    return (
+    <div className="flex gap-6">
+      {/* Left: Specs list */}
+      <div className={`space-y-4 ${validationResult || buildOutput ? 'flex-1 min-w-0' : 'w-full'}`}>
+        {/* Stats bar */}
+        <div className="flex items-center gap-6 text-sm text-muted-foreground">
+          <span className="flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full bg-blue-500" />
+            <span className="font-medium text-foreground">{specs.length}</span> App Specs
+          </span>
+          <span className="flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full bg-purple-500" />
+            <span className="font-medium text-foreground">{featureSpecs.length}</span> Feature Specs
+          </span>
+        </div>
+
+        {loading ? (
+          <div className="space-y-3">
+            {[1, 2, 3].map((i) => (
+              <Skeleton key={i} className="h-16 rounded-lg" />
+            ))}
+          </div>
+        ) : specs.length === 0 && featureSpecs.length === 0 ? (
+          <Card>
+            <CardContent className="py-16 text-center">
+              <FileText className="h-12 w-12 mx-auto mb-4 text-muted-foreground/30" />
+              <p className="text-sm font-medium text-muted-foreground">No specs found</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Add YAML files to specs/apps/ or specs/features/ to get started
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <Card>
+            <CardContent className="p-0 divide-y divide-border">
+              {/* App Specs */}
+              {specs.map((spec) => (
+                <div
+                  key={spec.file}
+                  className="flex items-center gap-4 px-4 py-3 hover:bg-muted/40 transition-colors border-l-[3px] border-l-blue-500"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <Globe className="h-4 w-4 text-blue-400 shrink-0" />
+                      <span className="font-medium text-sm truncate">{spec.metadata?.name || spec.file}</span>
+                      <Badge variant="outline" className="text-[10px] border-blue-500/30 text-blue-400 shrink-0">App</Badge>
+                      {spec.status && spec.status !== 'unknown' && (
+                        <Badge variant="secondary" className="text-[10px] shrink-0">{spec.status}</Badge>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-4 mt-1 text-xs text-muted-foreground">
+                      {spec.metadata?.package && <span className="truncate">{String(spec.metadata.package)}</span>}
+                      {spec.deployment?.port && (
+                        <span className="flex items-center gap-1"><Server className="h-3 w-3" /> :{String(spec.deployment.port)}</span>
+                      )}
+                      {spec.deployment?.region && (
+                        <span className="flex items-center gap-1"><Globe className="h-3 w-3" /> {String(spec.deployment.region)}</span>
+                      )}
+                      {spec.database?.collections && (
+                        <span className="flex items-center gap-1"><Database className="h-3 w-3" /> {(spec.database.collections as unknown[]).length} collections</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={() => setEditingSpec({ file: spec.file, name: spec.metadata?.name || spec.file })}
+                      title="View / Edit"
+                    >
+                      <Eye className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2.5 text-xs"
+                      onClick={() => handleValidate(spec.file)}
+                      disabled={!!activeAction}
+                    >
+                      {activeAction?.type === 'validate' && activeAction?.file === spec.file ? 'Validating...' : 'Validate'}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2.5 text-xs"
+                      onClick={() => handleBuild(spec.file)}
+                      disabled={!!activeAction}
+                    >
+                      {activeAction?.type === 'build' && activeAction?.file === spec.file ? 'Building...' : 'Build'}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={() => handleEnqueue(spec.file, 'AppSpec')}
+                      title="Add to queue"
+                    >
+                      <ListPlus className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+
+              {/* Feature Specs */}
+              {featureSpecs.map((fs) => (
+                <div
+                  key={fs.file}
+                  className="flex items-center gap-4 px-4 py-3 hover:bg-muted/40 transition-colors border-l-[3px] border-l-purple-500"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <Puzzle className="h-4 w-4 text-purple-400 shrink-0" />
+                      <span className="font-medium text-sm truncate">{String(fs.feature?.name || fs.file)}</span>
+                      <Badge variant="outline" className="text-[10px] border-purple-500/30 text-purple-400 shrink-0">Feature</Badge>
+                      {fs.target?.app && (
+                        <span className="text-xs text-muted-foreground">→ {String(fs.target.app)}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-4 mt-1 text-xs text-muted-foreground">
+                      {fs.feature?.description && <span className="truncate">{String(fs.feature.description)}</span>}
+                      <span className="flex items-center gap-1 shrink-0"><Layers className="h-3 w-3" /> {fs.pages?.length || 0} pages</span>
+                      <span className="flex items-center gap-1 shrink-0"><Database className="h-3 w-3" /> {String((fs.model as any)?.collection || 'unknown')}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={() => setEditingSpec({ file: fs.file, name: String(fs.feature?.name || fs.file) })}
+                      title="View / Edit"
+                    >
+                      <Eye className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2.5 text-xs"
+                      onClick={() => handleFeatureAction(fs.file, 'validate')}
+                      disabled={!!activeAction}
+                    >
+                      {activeAction?.type === 'feature-validate' && activeAction?.file === fs.file ? 'Validating...' : 'Validate'}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2.5 text-xs"
+                      onClick={() => handleFeatureAction(fs.file, 'build')}
+                      disabled={!!activeAction}
+                    >
+                      {activeAction?.type === 'feature-build' && activeAction?.file === fs.file ? 'Building...' : 'Build'}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={() => handleEnqueue(fs.file, 'FeatureSpec')}
+                      title="Add to queue"
+                    >
+                      <ListPlus className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        )}
+      </div>
+    </div>
+    );
+  };
+
+  const renderReports = () => (
+    <div className="space-y-6">
+
+      {loading ? (
+        <Skeleton className="h-[600px] rounded-lg" />
+      ) : (
+        <ReportViewer
+          reports={reports}
+          selectedReport={selectedReport}
+          onSelectReport={setSelectedReport}
+        />
+      )}
+    </div>
+  );
+
+  const hasOutput = !!(validationResult || buildOutput);
+
+  return (
+    <div className="flex h-screen bg-background">
+      <Sidebar
+        activeTab={showAddProject ? 'projects' : activeTab}
+        onTabChange={(tab) => {
+          if (tab === 'projects') {
+            setShowAddProject(true);
+          } else {
+            setShowAddProject(false);
+            setActiveTab(tab);
+          }
+        }}
+        onAddProject={() => setShowAddProject(true)}
+        projectRefreshKey={projectRefreshKey}
+      />
+      <main className="flex-1 overflow-auto">
+        {showAddProject ? (
+          <div className="p-8 h-full">
+            <AddProject onProjectAdded={() => {
+              setShowAddProject(false);
+              setHasProjects(true);
+              setProjectRefreshKey((k) => k + 1);
+              fetchProjects();
+              fetchSpecs();
+              fetchReports();
+            }} />
+          </div>
+        ) : (
+        <div className="p-8">
+          {/* Page header — only for dashboard, specs, reports */}
+          {['dashboard', 'specs', 'reports', 'integrations', 'settings'].includes(activeTab) && (
+            <div className="mb-8 flex items-start justify-between">
+              <div>
+                <h1 className="text-2xl font-bold tracking-tight">
+                  {activeTab === 'dashboard' && 'Dashboard'}
+                  {activeTab === 'specs' && 'Specs'}
+                  {activeTab === 'reports' && 'Reports'}
+                  {activeTab === 'integrations' && 'Integrations'}
+                  {activeTab === 'settings' && 'Settings'}
+                </h1>
+                <p className="text-sm text-muted-foreground mt-1">
+                  {activeTab === 'dashboard' && 'Factory overview and quick actions'}
+                  {activeTab === 'specs' && 'Manage your app specifications'}
+                  {activeTab === 'reports' && 'View generated build reports'}
+                  {activeTab === 'integrations' && 'Connect external services and tools'}
+                  {activeTab === 'settings' && 'Configure factory preferences'}
+                </p>
+              </div>
+              {activeTab === 'specs' && hasOutput && !outputPanelOpen && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  onClick={() => setOutputPanelOpen(true)}
+                >
+                  <Terminal className="h-4 w-4" />
+                  Output
+                </Button>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'dashboard' && renderDashboard()}
+          {activeTab === 'queue' && <QueueView />}
+          {activeTab === 'specs' && renderSpecs()}
+          {activeTab === 'reports' && renderReports()}
+          {activeTab === 'knowledge' && <KnowledgeView />}
+          {activeTab === 'integrations' && (
+            <div className="flex flex-col items-center justify-center py-24 text-center">
+              <Plug className="h-12 w-12 text-muted-foreground/30 mb-4" />
+              <h2 className="text-lg font-semibold">Integrations</h2>
+              <p className="text-sm text-muted-foreground mt-1 max-w-md">
+                Connect external services like GitHub, CI/CD pipelines, and notification channels. Coming soon.
+              </p>
+            </div>
+          )}
+          {activeTab === 'settings' && (
+            <div className="flex flex-col items-center justify-center py-24 text-center">
+              <Settings className="h-12 w-12 text-muted-foreground/30 mb-4" />
+              <h2 className="text-lg font-semibold">Settings</h2>
+              <p className="text-sm text-muted-foreground mt-1 max-w-md">
+                Configure factory defaults, build preferences, and output templates. Coming soon.
+              </p>
+            </div>
+          )}
+        </div>
+        )}
+      </main>
+
+      {/* Collapsible right output panel */}
+      <aside
+        className={`border-l border-border bg-background/95 backdrop-blur-sm transition-all duration-300 ease-in-out overflow-hidden ${
+          outputPanelOpen && hasOutput ? 'w-[420px]' : 'w-0'
+        }`}
+      >
+        <div className="w-[420px] h-screen flex flex-col">
+          {/* Panel header */}
+          <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+            <div className="flex items-center gap-2">
+              <Terminal className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm font-medium">Output</span>
+              {activeAction && (
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                </span>
+              )}
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={() => setOutputPanelOpen(false)}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+
+          {/* Panel content */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {validationResult && (
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex items-center gap-2">
+                    {validationResult.passed ? (
+                      <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                    ) : (
+                      <AlertCircle className="h-4 w-4 text-destructive" />
+                    )}
+                    <CardTitle className="text-sm">
+                      Validation {validationResult.passed ? 'Passed' : 'Failed'}
+                    </CardTitle>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-8"></TableHead>
+                        <TableHead className="text-xs">Check</TableHead>
+                        <TableHead className="text-xs">Details</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {validationResult.checks.map((check, i) => (
+                        <TableRow key={i}>
+                          <TableCell>
+                            {check.passed ? (
+                              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                            ) : (
+                              <AlertCircle className="h-3.5 w-3.5 text-destructive" />
+                            )}
+                          </TableCell>
+                          <TableCell className="text-xs font-medium">{check.name}</TableCell>
+                          <TableCell className="text-xs text-muted-foreground">{check.message}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            )}
+            {buildOutput && (
+              <BuildLog
+                output={buildOutput}
+                isRunning={!!activeAction}
+              />
+            )}
+          </div>
+        </div>
+      </aside>
+    </div>
+  );
+}

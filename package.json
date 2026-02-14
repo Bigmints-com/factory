@@ -1,0 +1,41 @@
+{
+    "name": "saveaday-factory",
+    "version": "1.0.0",
+    "private": true,
+    "type": "module",
+    "description": "Autonomous app scaffolding factory for the SaveADay monorepo",
+    "bin": {
+        "factory": "./engine/cli.ts"
+    },
+    "scripts": {
+        "dev": "cd ui && npm run dev -- -p 4040",
+        "factory": "tsx engine/cli.ts",
+        "scaffold": "tsx engine/cli.ts scaffold",
+        "validate": "tsx engine/cli.ts validate",
+        "patch": "tsx engine/cli.ts patch",
+        "sync": "tsx engine/cli.ts sync",
+        "report": "tsx engine/cli.ts report",
+        "status": "tsx engine/cli.ts status",
+        "ui": "cd ui && npm run dev -- -p 3001",
+        "lint": "eslint engine/ --ext .ts",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "ajv": "^8.17.1",
+        "better-sqlite3": "^12.6.2",
+        "chalk": "^5.3.0",
+        "commander": "^13.1.0",
+        "glob": "^11.0.1",
+        "yaml": "^2.4.0"
+    },
+    "devDependencies": {
+        "@types/better-sqlite3": "^7.6.13",
+        "@types/node": "^20",
+        "eslint": "^9",
+        "tsx": "^4.19.0",
+        "typescript": "^5"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    }
+}
