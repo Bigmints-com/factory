@@ -236,27 +236,49 @@ function getStepIcon(label: string): typeof CheckCircle2 {
   return Zap;
 }
 
-const stepStatusStyles: Record<string, { border: string; text: string; bg: string }> = {
-  success: { border: 'border-emerald-500/30', text: 'text-emerald-400', bg: 'bg-emerald-500/10' },
-  error: { border: 'border-red-500/30', text: 'text-red-400', bg: 'bg-red-500/10' },
-  running: { border: 'border-blue-500/30', text: 'text-blue-400', bg: 'bg-blue-500/10' },
-  info: { border: 'border-muted', text: 'text-muted-foreground', bg: 'bg-muted/50' },
-  warning: { border: 'border-amber-500/30', text: 'text-amber-400', bg: 'bg-amber-500/10' },
-};
+/* ── Activity Timeline Component (onboarding-01 stepper pattern) ── */
 
-/* ── Activity Timeline Component ── */
+function CircularProgress({ completed, total }: { completed: number; total: number }) {
+  const progress = total > 0 ? (completed / total) * 100 : 0;
+  const strokeDashoffset = 100 - progress;
+  return (
+    <svg className="-rotate-90 scale-y-[-1]" height="14" width="14" viewBox="0 0 14 14">
+      <circle className="stroke-muted" cx="7" cy="7" fill="none" r="6" strokeWidth="2" pathLength="100" />
+      <circle
+        className="stroke-primary"
+        cx="7" cy="7" fill="none" r="6" strokeWidth="2"
+        pathLength="100" strokeDasharray="100" strokeLinecap="round"
+        style={{ strokeDashoffset }}
+      />
+    </svg>
+  );
+}
+
+function StepIndicator({ status, isActive }: { status: 'success' | 'error' | 'running' | 'info' | 'warning'; isActive: boolean }) {
+  if (status === 'success') {
+    return <CheckCircle2 className="mt-0.5 h-[18px] w-[18px] shrink-0 text-emerald-400" />;
+  }
+  if (status === 'error') {
+    return <XCircle className="mt-0.5 h-[18px] w-[18px] shrink-0 text-red-400" />;
+  }
+  if (status === 'running' && isActive) {
+    return <Loader2 className="mt-0.5 h-[18px] w-[18px] shrink-0 text-blue-400 animate-spin" />;
+  }
+  return (
+    <div className="mt-0.5 h-[18px] w-[18px] shrink-0 rounded-full border-2 border-muted-foreground/30" />
+  );
+}
 
 function ActivityTimeline({ output, error, itemStatus }: { output: string; error: string | null; itemStatus: string }) {
   const [showRaw, setShowRaw] = useState(false);
+  const [openStepId, setOpenStepId] = useState<string | null>(null);
 
   const activities = useMemo(() => {
     const steps = parseActivities(output);
-    // If item is failed, mark the last running step as error
     if (itemStatus === 'failed' && steps.length > 0) {
       const lastStep = steps[steps.length - 1];
       if (lastStep.status === 'running') lastStep.status = 'error';
     }
-    // If item is completed, mark all running steps as success
     if (itemStatus === 'completed') {
       for (const s of steps) {
         if (s.status === 'running') s.status = 'success';
@@ -264,6 +286,16 @@ function ActivityTimeline({ output, error, itemStatus }: { output: string; error
     }
     return steps;
   }, [output, itemStatus]);
+
+  // Auto-open the first error or the last running step
+  useMemo(() => {
+    const errorStep = activities.find(s => s.status === 'error');
+    const runningStep = activities.find(s => s.status === 'running');
+    if (errorStep) setOpenStepId(errorStep.id);
+    else if (runningStep) setOpenStepId(runningStep.id);
+  }, [activities]);
+
+  const completedCount = activities.filter(s => s.status === 'success').length;
 
   if (activities.length === 0 && !error) {
     return output ? (
@@ -274,75 +306,120 @@ function ActivityTimeline({ output, error, itemStatus }: { output: string; error
   }
 
   return (
-    <div className="space-y-2">
-      {/* Activity Steps */}
-      <div className="relative">
-        {/* Vertical connector line */}
-        <div className="absolute left-[13px] top-3 bottom-3 w-px bg-border" />
+    <div className="space-y-3">
+      {/* Progress header */}
+      <div className="rounded-lg border bg-card p-4 shadow-xs">
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="text-sm font-semibold text-foreground">Build Activity</h4>
+          <div className="flex items-center gap-2">
+            <CircularProgress completed={completedCount} total={activities.length} />
+            <span className="text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">{completedCount}</span>
+              {' / '}
+              <span className="font-medium text-foreground">{activities.length}</span>
+              {' steps'}
+            </span>
+          </div>
+        </div>
 
-        <div className="space-y-1">
-          {activities.map((step, idx) => {
-            const style = stepStatusStyles[step.status] || stepStatusStyles.info;
+        {/* Steps */}
+        <div className="space-y-0">
+          {activities.map((step, index) => {
+            const isOpen = openStepId === step.id;
+            const isFirst = index === 0;
+            const prevStep = activities[index - 1];
+            const isPrevOpen = prevStep && openStepId === prevStep.id;
+            const showBorderTop = !isFirst && !isOpen && !isPrevOpen;
             const StepIcon = step.icon;
-            const isLast = idx === activities.length - 1;
 
             return (
-              <div key={step.id} className="relative pl-9">
-                {/* Step dot / icon */}
-                <div className={`absolute left-0 top-1 w-7 h-7 rounded-full flex items-center justify-center z-10 ${style.bg} border ${style.border}`}>
-                  {step.status === 'running' && itemStatus === 'running' ? (
-                    <Loader2 className={`h-3.5 w-3.5 ${style.text} animate-spin`} />
-                  ) : step.status === 'success' ? (
-                    <CheckCircle2 className={`h-3.5 w-3.5 ${style.text}`} />
-                  ) : step.status === 'error' ? (
-                    <XCircle className={`h-3.5 w-3.5 ${style.text}`} />
-                  ) : (
-                    <StepIcon className={`h-3.5 w-3.5 ${style.text}`} />
-                  )}
-                </div>
-
-                {/* Step content */}
-                <div className={`rounded-lg border px-3 py-2 ${isLast && step.status === 'error' ? style.border + ' ' + style.bg : 'border-border/50'}`}>
-                  <div className="flex items-center justify-between">
-                    <span className={`text-xs font-medium ${step.status === 'error' ? style.text : 'text-foreground'}`}>
-                      {step.label}
-                    </span>
-                    {step.status === 'success' && (
-                      <Badge variant="outline" className="text-[9px] border-emerald-500/30 text-emerald-400 h-4 px-1">
-                        Done
-                      </Badge>
-                    )}
-                    {step.status === 'error' && (
-                      <Badge variant="outline" className="text-[9px] border-red-500/30 text-red-400 h-4 px-1">
-                        Failed
-                      </Badge>
-                    )}
-                  </div>
-
-                  {/* Sub-steps */}
-                  {step.substeps.length > 0 && (
-                    <div className="mt-1.5 space-y-0.5">
-                      {step.substeps.map((sub, si) => (
-                        <div key={si} className="flex items-start gap-1.5 text-[11px]">
-                          {sub.status === 'success' && <CheckCircle2 className="h-3 w-3 text-emerald-400 mt-0.5 shrink-0" />}
-                          {sub.status === 'error' && <XCircle className="h-3 w-3 text-red-400 mt-0.5 shrink-0" />}
-                          {sub.status === 'info' && <ChevronRight className="h-3 w-3 text-muted-foreground mt-0.5 shrink-0" />}
-                          <span className={sub.status === 'error' ? 'text-red-300' : 'text-muted-foreground'}>
-                            {sub.text}
-                          </span>
+              <div
+                key={step.id}
+                className={`group ${isOpen ? 'rounded-lg' : ''} ${showBorderTop ? 'border-t border-border' : ''}`}
+              >
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setOpenStepId(isOpen ? null : step.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setOpenStepId(isOpen ? null : step.id);
+                    }
+                  }}
+                  className={`block w-full cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${isOpen ? 'rounded-lg' : ''}`}
+                >
+                  <div className={`relative overflow-hidden rounded-lg transition-colors ${isOpen ? 'border border-border bg-muted' : ''}`}>
+                    <div className="relative flex items-center justify-between gap-3 py-2.5 pl-3 pr-2">
+                      <div className="flex w-full gap-3">
+                        <div className="shrink-0">
+                          <StepIndicator status={step.status} isActive={itemStatus === 'running'} />
                         </div>
-                      ))}
-                    </div>
-                  )}
+                        <div className="mt-0.5 grow">
+                          <h4 className={`text-sm font-medium ${
+                            step.status === 'success' ? 'text-emerald-400' :
+                            step.status === 'error' ? 'text-red-400' :
+                            step.status === 'running' && itemStatus === 'running' ? 'text-blue-400' :
+                            'text-foreground'
+                          }`}>
+                            {step.label}
+                          </h4>
 
-                  {/* Error details (indented lines) */}
-                  {step.details.length > 0 && step.status === 'error' && (
-                    <div className="mt-2 rounded bg-red-500/5 border border-red-500/10 p-2 max-h-32 overflow-y-auto">
-                      <pre className="text-[10px] font-mono text-red-300/80 whitespace-pre-wrap">
-                        {step.details.join('\n')}
-                      </pre>
+                          {/* Collapsible content */}
+                          {isOpen && (
+                            <div className="mt-2 space-y-2">
+                              {/* Sub-steps */}
+                              {step.substeps.length > 0 && (
+                                <div className="space-y-1">
+                                  {step.substeps.map((sub, si) => (
+                                    <div key={si} className="flex items-start gap-2 text-xs">
+                                      {sub.status === 'success' && <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 mt-0.5 shrink-0" />}
+                                      {sub.status === 'error' && <XCircle className="h-3.5 w-3.5 text-red-400 mt-0.5 shrink-0" />}
+                                      {sub.status === 'info' && <ChevronRight className="h-3.5 w-3.5 text-muted-foreground mt-0.5 shrink-0" />}
+                                      <span className={sub.status === 'error' ? 'text-red-300' : 'text-muted-foreground'}>
+                                        {sub.text}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              {/* Error details */}
+                              {step.details.length > 0 && step.status === 'error' && (
+                                <div className="rounded bg-red-500/5 border border-red-500/10 p-2 max-h-32 overflow-y-auto">
+                                  <pre className="text-[10px] font-mono text-red-300/80 whitespace-pre-wrap">
+                                    {step.details.join('\n')}
+                                  </pre>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Expand/collapse indicator + status badge */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        {step.status === 'success' && (
+                          <Badge variant="outline" className="text-[9px] border-emerald-500/30 text-emerald-400 h-4 px-1.5">
+                            Done
+                          </Badge>
+                        )}
+                        {step.status === 'error' && (
+                          <Badge variant="outline" className="text-[9px] border-red-500/30 text-red-400 h-4 px-1.5">
+                            Failed
+                          </Badge>
+                        )}
+                        {step.status === 'running' && itemStatus === 'running' && (
+                          <Badge variant="outline" className="text-[9px] border-blue-500/30 text-blue-400 h-4 px-1.5">
+                            Running
+                          </Badge>
+                        )}
+                        {!isOpen && (
+                          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                        )}
+                      </div>
                     </div>
-                  )}
+                  </div>
                 </div>
               </div>
             );
@@ -352,7 +429,7 @@ function ActivityTimeline({ output, error, itemStatus }: { output: string; error
 
       {/* Error banner */}
       {error && (
-        <div className="rounded-md bg-red-500/10 border border-red-500/20 p-3 ml-9">
+        <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3">
           <p className="text-xs text-red-400 font-medium mb-1">Error</p>
           <p className="text-[11px] text-red-300 font-mono whitespace-pre-wrap line-clamp-6">{error}</p>
         </div>
@@ -360,7 +437,7 @@ function ActivityTimeline({ output, error, itemStatus }: { output: string; error
 
       {/* Raw output toggle */}
       {output && (
-        <div className="ml-9">
+        <div>
           <Button
             variant="ghost"
             size="sm"
