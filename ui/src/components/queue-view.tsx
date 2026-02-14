@@ -530,23 +530,7 @@ export function QueueView() {
         })}
       </div>
 
-      {/* Process result banner */}
-      {processResult && (
-        <Card className="border-emerald-500/30 bg-emerald-500/5">
-          <CardContent className="pt-4 pb-3">
-            <div className="flex items-center gap-3 text-sm">
-              <Zap className="h-4 w-4 text-emerald-400" />
-              <span>
-                Processed <strong>{processResult.processed}</strong> items:
-                <span className="text-emerald-400 ml-2">{processResult.completed} completed</span>
-                {processResult.failed > 0 && (
-                  <span className="text-red-400 ml-2">{processResult.failed} failed</span>
-                )}
-              </span>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+
 
       <Separator />
 
