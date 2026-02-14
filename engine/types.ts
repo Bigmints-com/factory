@@ -205,6 +205,18 @@ export interface BuildResult {
     errors?: string[];
 }
 
+export type TaskType = 'full-app' | 'frontend' | 'scaffold' | 'static' | 'config';
+
+export interface TaskProfile {
+    type: TaskType;
+    needsPlan: boolean;
+    needsInstall: boolean;
+    needsTypeCheck: boolean;
+    needsLint: boolean;
+    needsTest: boolean;
+    maxIterations: number;
+}
+
 export interface KnowledgeFile {
     app: string;
     filename: string;

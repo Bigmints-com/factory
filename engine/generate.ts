@@ -10,13 +10,13 @@
 import type {
     AppSpec, FeatureSpec, ProjectContext,
     GeneratedFile, BuildPlan, BuildResult,
-    LLMProvider,
+    LLMProvider, TaskProfile,
 } from './types.ts';
+import { classifyTask } from './task-classifier.ts';
 import { specSlug, specPort } from './types.ts';
 import { loadSettings, getActiveProvider } from './config.ts';
 import { log, logStep, logError } from './log.ts';
 
-const MAX_ITERATIONS = 3;
 const PIPELINE_TIMEOUT_MS = 4 * 60 * 1000; // 4 minutes — bail before the API route times out
 
 // ─── Main Pipeline ───────────────────────────────────────
@@ -36,50 +36,69 @@ export async function runPipeline(
 
     log('●', `Using ${provider.name} → ${model}`);
 
-    // Step 1: Plan
-    logStep(1, 5, 'Planning build...');
-    const plan = await planBuild(spec, context, provider, model);
-    log('✓', `Plan: ${plan.files.length} files, ${plan.decisions.length} decisions`);
+    // Step 0: Classify the task
+    const profile = classifyTask(spec);
+
+    // Step 1: Plan (skip for static/config tasks)
+    let plan: BuildPlan;
+    if (profile.needsPlan) {
+        logStep(1, 5, 'Planning build...');
+        plan = await planBuild(spec, context, provider, model);
+        log('✓', `Plan: ${plan.files.length} files, ${plan.decisions.length} decisions`);
+    } else {
+        logStep(1, 5, 'Skipping plan (not needed for this task type)');
+        plan = {
+            files: [],
+            architecture: `${profile.type} — no planning needed`,
+            decisions: [`Task type: ${profile.type}`],
+        };
+        log('✓', `Task type: ${profile.type} — plan skipped`);
+    }
 
     // Step 2: Build (first attempt)
     logStep(2, 5, 'Generating code...');
     let files = await executeBuild(spec, context, plan, provider, model);
     log('✓', `Generated ${files.length} files`);
 
-    // Step 3+4: Test → Iterate loop
+    // Step 3+4: Test → Iterate loop (gated by profile)
     let iteration = 0;
     let errors: string[] = [];
 
-    while (iteration < MAX_ITERATIONS) {
-        // Elapsed-time guard: bail before the API route times out
-        const elapsed = Date.now() - pipelineStart;
-        if (elapsed > PIPELINE_TIMEOUT_MS) {
-            logError(`Pipeline timeout (${Math.round(elapsed / 1000)}s elapsed). Returning best effort.`);
-            break;
+    if (profile.maxIterations === 0) {
+        logStep(3, 5, 'Skipping validation (not needed for this task type)');
+        log('✓', `Task type: ${profile.type} — no toolchain validation`);
+    } else {
+        while (iteration < profile.maxIterations) {
+            // Elapsed-time guard: bail before the API route times out
+            const elapsed = Date.now() - pipelineStart;
+            if (elapsed > PIPELINE_TIMEOUT_MS) {
+                logError(`Pipeline timeout (${Math.round(elapsed / 1000)}s elapsed). Returning best effort.`);
+                break;
+            }
+
+            logStep(3 + Math.min(iteration, 1), 5, iteration === 0 ? 'Testing build...' : `Iterating (attempt ${iteration + 1}/${profile.maxIterations})...`);
+            errors = testBuild(files, spec.stack, profile);
+
+            if (errors.length === 0) {
+                log('✓', 'All tests passed!');
+                break;
+            }
+
+            log('!', `${errors.length} error(s) found`);
+            for (const err of errors.slice(0, 5)) {
+                log('  ', `  ${err}`);
+            }
+
+            if (iteration + 1 >= profile.maxIterations) {
+                logError(`Max iterations (${profile.maxIterations}) reached. Returning best effort.`);
+                break;
+            }
+
+            iteration++;
+            log('●', `Feeding errors back to LLM...`);
+            files = await iterateBuild(spec, context, plan, files, errors, provider, model);
+            log('✓', `Regenerated ${files.length} files`);
         }
-
-        logStep(3 + Math.min(iteration, 1), 5, iteration === 0 ? 'Testing build...' : `Iterating (attempt ${iteration + 1}/${MAX_ITERATIONS})...`);
-        errors = testBuild(files, spec.stack);
-
-        if (errors.length === 0) {
-            log('✓', 'All tests passed!');
-            break;
-        }
-
-        log('!', `${errors.length} error(s) found`);
-        for (const err of errors.slice(0, 5)) {
-            log('  ', `  ${err}`);
-        }
-
-        if (iteration + 1 >= MAX_ITERATIONS) {
-            logError(`Max iterations (${MAX_ITERATIONS}) reached. Returning best effort.`);
-            break;
-        }
-
-        iteration++;
-        log('●', `Feeding errors back to LLM...`);
-        files = await iterateBuild(spec, context, plan, files, errors, provider, model);
-        log('✓', `Regenerated ${files.length} files`);
     }
 
     return {
@@ -254,22 +273,24 @@ function packageInstallCommand(pm: string | undefined): string {
  *
  * Returns a list of error messages. Empty = all good.
  */
-function testBuild(files: GeneratedFile[], stack: StackConfig): string[] {
+function testBuild(files: GeneratedFile[], stack: StackConfig, profile: TaskProfile): string[] {
     const errors: string[] = [];
 
-    // ── Phase 1: Structural checks ──
+    // ── Phase 1: Structural checks (always run) ──
 
-    const pkg = files.find(f => f.filename === 'package.json');
-    if (!pkg) {
-        errors.push('Missing package.json');
-    } else {
-        try { JSON.parse(pkg.content); }
-        catch { errors.push('package.json is not valid JSON'); }
+    // Only check for package.json if we need install
+    if (profile.needsInstall) {
+        const pkg = files.find(f => f.filename === 'package.json');
+        if (!pkg) {
+            errors.push('Missing package.json');
+        } else {
+            try { JSON.parse(pkg.content); }
+            catch { errors.push('package.json is not valid JSON'); }
+        }
     }
 
-    // Only require tsconfig for TypeScript projects
-    const isTS = (stack.language?.toLowerCase() ?? 'typescript') !== 'javascript';
-    if (isTS) {
+    // Only require tsconfig for TypeScript projects that need type checking
+    if (profile.needsTypeCheck) {
         const tsconfig = files.find(f => f.filename === 'tsconfig.json');
         if (!tsconfig) errors.push('Missing tsconfig.json');
     }
@@ -290,7 +311,13 @@ function testBuild(files: GeneratedFile[], stack: StackConfig): string[] {
     // Bail early on structural failures — no point running tools
     if (errors.length > 0) return errors;
 
-    // ── Phase 2: Real toolchain validation ──
+    // ── Phase 2: Real toolchain validation (gated by profile) ──
+
+    // Skip entire toolchain if no install needed
+    if (!profile.needsInstall) {
+        log('✓', `Skipping toolchain (task type: ${profile.type})`);
+        return errors;
+    }
 
     const tmpDir = mkdtempSync(join(tmpdir(), 'factory-test-'));
     log('●', `Testing in ${tmpDir}`);
@@ -315,8 +342,8 @@ function testBuild(files: GeneratedFile[], stack: StackConfig): string[] {
         return errors; // Can't continue without deps
     }
 
-    // Step 2: TypeScript check
-    if (isTS) {
+    // Step 2: TypeScript check (gated)
+    if (profile.needsTypeCheck) {
         try {
             logStep(0, 0, 'Running tsc --noEmit...');
             execSync('npx tsc --noEmit', { cwd: tmpDir, stdio: 'pipe', timeout: 30_000 });
@@ -330,32 +357,42 @@ function testBuild(files: GeneratedFile[], stack: StackConfig): string[] {
                 .join('\n');
             errors.push(`TypeScript errors:\n${tsErrors || msg.slice(0, 500)}`);
         }
+    } else {
+        log('○', 'Skipping tsc (not needed)');
     }
 
-    // Step 3: Lint (if configured)
-    const lint = lintCommand(stack.linter);
-    if (lint) {
-        try {
-            logStep(0, 0, `Running ${stack.linter} linter...`);
-            execSync(lint, { cwd: tmpDir, stdio: 'pipe', timeout: 30_000 });
-            log('✓', 'Lint passed');
-        } catch (err) {
-            const msg = err instanceof Error ? (err as any).stdout?.toString() || err.message : String(err);
-            errors.push(`Lint errors (${stack.linter}):\n${msg.slice(0, 500)}`);
+    // Step 3: Lint (gated)
+    if (profile.needsLint) {
+        const lint = lintCommand(stack.linter);
+        if (lint) {
+            try {
+                logStep(0, 0, `Running ${stack.linter} linter...`);
+                execSync(lint, { cwd: tmpDir, stdio: 'pipe', timeout: 30_000 });
+                log('✓', 'Lint passed');
+            } catch (err) {
+                const msg = err instanceof Error ? (err as any).stdout?.toString() || err.message : String(err);
+                errors.push(`Lint errors (${stack.linter}):\n${msg.slice(0, 500)}`);
+            }
         }
+    } else {
+        log('○', 'Skipping lint (not needed)');
     }
 
-    // Step 4: Test (if configured)
-    const test = testCommand(stack.testing);
-    if (test) {
-        try {
-            logStep(0, 0, `Running ${stack.testing} tests...`);
-            execSync(test, { cwd: tmpDir, stdio: 'pipe', timeout: 60_000 });
-            log('✓', 'Tests passed');
-        } catch (err) {
-            const msg = err instanceof Error ? (err as any).stdout?.toString() || err.message : String(err);
-            errors.push(`Test failures (${stack.testing}):\n${msg.slice(0, 500)}`);
+    // Step 4: Test (gated)
+    if (profile.needsTest) {
+        const test = testCommand(stack.testing);
+        if (test) {
+            try {
+                logStep(0, 0, `Running ${stack.testing} tests...`);
+                execSync(test, { cwd: tmpDir, stdio: 'pipe', timeout: 60_000 });
+                log('✓', 'Tests passed');
+            } catch (err) {
+                const msg = err instanceof Error ? (err as any).stdout?.toString() || err.message : String(err);
+                errors.push(`Test failures (${stack.testing}):\n${msg.slice(0, 500)}`);
+            }
         }
+    } else {
+        log('○', 'Skipping tests (not needed)');
     }
 
     return errors;
