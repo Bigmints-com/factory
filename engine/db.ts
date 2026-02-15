@@ -75,24 +75,63 @@ function initSchema(db: Database.Database): void {
     );
     insert.run('is_running', 'false');
     insert.run('last_run_at', '');
+
+    // ── Migrations: add new columns if missing ──
+    const cols = db.prepare(`PRAGMA table_info(builds)`).all() as { name: string }[];
+    const colNames = new Set(cols.map(c => c.name));
+    const migrations: [string, string][] = [
+        ['model', 'TEXT'],
+        ['provider', 'TEXT'],
+        ['tokens_in', 'INTEGER DEFAULT 0'],
+        ['tokens_out', 'INTEGER DEFAULT 0'],
+        ['error_source', 'TEXT'],
+    ];
+    for (const [col, type] of migrations) {
+        if (!colNames.has(col)) {
+            db.exec(`ALTER TABLE builds ADD COLUMN ${col} ${type}`);
+        }
+    }
+
+    // ── Queue items: add phase + depends_on for dependency-aware scheduling ──
+    const qCols = db.prepare(`PRAGMA table_info(queue_items)`).all() as { name: string }[];
+    const qColNames = new Set(qCols.map(c => c.name));
+    const qMigrations: [string, string][] = [
+        ['phase', 'INTEGER DEFAULT 0'],
+        ['depends_on', "TEXT DEFAULT '[]'"],
+    ];
+    for (const [col, type] of qMigrations) {
+        if (!qColNames.has(col)) {
+            db.exec(`ALTER TABLE queue_items ADD COLUMN ${col} ${type}`);
+        }
+    }
 }
 
-/** Log a build result to the knowledge base. */
+/** Log a build result to the knowledge base as a structured debrief. */
 export function logBuild(
     specFile: string,
     kind: string,
     status: string,
+    summary: string,
     filesGenerated: string[],
-    output: string,
     durationMs: number,
-    notes?: string,
+    opts?: {
+        model?: string;
+        provider?: string;
+        tokensIn?: number;
+        tokensOut?: number;
+        errorSource?: 'llm' | 'engine' | null;
+    },
 ): void {
     const db = getDb();
     const id = `build_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
+    const oneLiner = status === 'failed'
+        ? 'Build failed'
+        : `Built ${filesGenerated.length} file(s) in ${(durationMs / 1000).toFixed(1)}s`;
+
     db.prepare(`
-        INSERT INTO builds (id, spec_file, kind, timestamp, duration_ms, status, files_generated, output, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO builds (id, spec_file, kind, timestamp, duration_ms, status, files_generated, output, notes, model, provider, tokens_in, tokens_out, error_source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
         id,
         specFile,
@@ -101,8 +140,13 @@ export function logBuild(
         durationMs,
         status,
         JSON.stringify(filesGenerated),
-        output,
-        notes || (status === 'failed' ? 'Build failed' : `Build completed (${filesGenerated.length} files)`),
+        summary,
+        oneLiner,
+        opts?.model || null,
+        opts?.provider || null,
+        opts?.tokensIn || 0,
+        opts?.tokensOut || 0,
+        opts?.errorSource || null,
     );
 }
 

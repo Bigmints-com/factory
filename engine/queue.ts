@@ -13,6 +13,8 @@ export interface QueueItem {
     kind: 'AppSpec' | 'FeatureSpec';
     status: 'pending' | 'running' | 'completed' | 'failed' | 'needs-attention';
     priority: number;
+    phase: number;
+    dependsOn: string[];
     addedAt: string;
     startedAt: string | null;
     completedAt: string | null;
@@ -27,6 +29,8 @@ interface QueueRow {
     kind: string;
     status: string;
     priority: number;
+    phase: number;
+    depends_on: string;
     added_at: string;
     started_at: string | null;
     completed_at: string | null;
@@ -38,12 +42,16 @@ interface QueueRow {
 // ─── Helpers ─────────────────────────────────────────────
 
 function mapRow(row: QueueRow): QueueItem {
+    let dependsOn: string[] = [];
+    try { dependsOn = JSON.parse(row.depends_on || '[]'); } catch { /* empty */ }
     return {
         id: row.id,
         specFile: row.spec_file,
         kind: row.kind as QueueItem['kind'],
         status: row.status as QueueItem['status'],
         priority: row.priority,
+        phase: row.phase || 0,
+        dependsOn,
         addedAt: row.added_at,
         startedAt: row.started_at,
         completedAt: row.completed_at,
@@ -64,10 +72,16 @@ function timestamp(): string {
 // ─── Core Operations ─────────────────────────────────────
 
 /** Add a spec to the build queue. */
-export function enqueue(specFile: string, kind: 'AppSpec' | 'FeatureSpec'): QueueItem {
+export function enqueue(
+    specFile: string,
+    kind: 'AppSpec' | 'FeatureSpec',
+    opts?: { phase?: number; dependsOn?: string[] },
+): QueueItem {
     const db = getDb();
     const id = generateId();
     const now = timestamp();
+    const phase = opts?.phase ?? 0;
+    const dependsOn = JSON.stringify(opts?.dependsOn ?? []);
 
     // Check for duplicates
     const existing = db.prepare(
@@ -79,24 +93,57 @@ export function enqueue(specFile: string, kind: 'AppSpec' | 'FeatureSpec'): Queu
     }
 
     db.prepare(`
-        INSERT INTO queue_items (id, spec_file, kind, status, priority, added_at)
-        VALUES (?, ?, ?, 'pending', 0, ?)
-    `).run(id, specFile, kind, now);
+        INSERT INTO queue_items (id, spec_file, kind, status, priority, phase, depends_on, added_at)
+        VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
+    `).run(id, specFile, kind, phase, dependsOn, now);
 
     return getItem(id)!;
 }
 
-/** Get the next pending item (oldest first, highest priority). */
+/**
+ * Get the next pending item whose dependencies are all met.
+ * Order: phase ASC, priority DESC, added_at ASC.
+ * Skips items whose dependsOn specs are not all 'completed'.
+ */
 export function dequeue(): QueueItem | null {
     const db = getDb();
-    const row = db.prepare(`
+    // Get all pending items in scheduling order
+    const rows = db.prepare(`
         SELECT * FROM queue_items
         WHERE status = 'pending'
-        ORDER BY priority DESC, added_at ASC
-        LIMIT 1
-    `).get() as QueueRow | undefined;
+        ORDER BY phase ASC, priority DESC, added_at ASC
+    `).all() as QueueRow[];
 
-    return row ? mapRow(row) : null;
+    for (const row of rows) {
+        const item = mapRow(row);
+        if (areDependenciesMet(item.dependsOn)) {
+            return item;
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Check if all dependency slugs have a corresponding completed queue item.
+ * Returns true if dependsOn is empty (no dependencies).
+ */
+export function areDependenciesMet(dependsOn: string[]): boolean {
+    if (!dependsOn || dependsOn.length === 0) return true;
+
+    const db = getDb();
+    for (const depSlug of dependsOn) {
+        // Match by spec_file containing the slug (e.g., "auth-system.yaml" matches slug "auth-system")
+        const completed = db.prepare(`
+            SELECT id FROM queue_items
+            WHERE spec_file LIKE ? AND status = 'completed'
+            LIMIT 1
+        `).get(`%${depSlug}%`) as QueueRow | undefined;
+
+        if (!completed) return false;
+    }
+
+    return true;
 }
 
 /** Get a specific queue item by ID. */

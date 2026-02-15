@@ -21,14 +21,14 @@ import { loadSpec, loadFeatureSpec, listSpecs, validateSpec, validateFeatureSpec
 import { loadProjects, getActiveProject, addProject, removeProject, switchProject, loadBridgeConfig } from './config.ts';
 import { gatherContext } from './context.ts';
 import { runPipeline, runFeaturePipeline } from './generate.ts';
-import { writeFiles, setupProject, gitCommit, gitPush, writeKnowledgeEntry, writeAppAgentsMd } from './writer.ts';
+import { writeFiles, setupProject, gitCommit, gitPush, writeKnowledgeEntry, writeAppAgentsMd, buildDebrief } from './writer.ts';
 import { log, logHeader, logStep, logError } from './log.ts';
 import { specSlug, specPort, type ProjectStack } from './types.ts';
 import {
     enqueue, dequeue, listQueue, getQueueStats,
     markRunning, markCompleted, markFailed,
     removeItem, clearCompleted, retryItem,
-    isQueueRunning, setQueueRunning,
+    isQueueRunning, setQueueRunning, areDependenciesMet,
 } from './queue.ts';
 import { closeDb, logBuild } from './db.ts';
 
@@ -375,7 +375,16 @@ async function handleQueue(subcommand?: string, arg?: string): Promise<void> {
                         : item.status === 'failed' ? '❌'
                         : item.status === 'needs-attention' ? '⚠️'
                         : '⏳';
-                    log('  ', `${icon} [${item.id}] ${item.specFile} (${item.kind}) — ${item.status}`);
+                    const phaseTag = item.phase ? ` [P${item.phase}]` : '';
+                    const depsTag = item.dependsOn.length > 0
+                        ? ` ← depends on: ${item.dependsOn.join(', ')}` : '';
+                    const depsMetTag = item.dependsOn.length > 0 && item.status === 'pending'
+                        ? (areDependenciesMet(item.dependsOn) ? ' ✅deps met' : ' ⏳deps pending')
+                        : '';
+                    log('  ', `${icon} [${item.id}] ${item.specFile} (${item.kind})${phaseTag} — ${item.status}${depsMetTag}`);
+                    if (depsTag) {
+                        log('  ', `    ${depsTag}`);
+                    }
                     if (item.error) {
                         log('  ', `    Error: ${item.error.slice(0, 100)}`);
                     }
@@ -396,15 +405,21 @@ async function handleQueue(subcommand?: string, arg?: string): Promise<void> {
                 process.exit(1);
             }
 
-            // Detect kind
+            // Detect kind and parse phase/dependsOn
             let kind: 'AppSpec' | 'FeatureSpec' = 'AppSpec';
+            let phase: number | undefined;
+            let dependsOn: string[] | undefined;
             try {
-                loadFeatureSpec(specPath);
+                const fSpec = loadFeatureSpec(specPath);
                 kind = 'FeatureSpec';
+                phase = fSpec.phase;
+                dependsOn = fSpec.dependsOn;
             } catch { /* assume AppSpec */ }
 
-            const item = enqueue(specPath, kind);
-            log('✓', `Queued: ${item.specFile} (${item.kind}) → ${item.id}`);
+            const item = enqueue(specPath, kind, { phase, dependsOn });
+            const phaseInfo = phase ? ` [phase ${phase}]` : '';
+            const depsInfo = dependsOn && dependsOn.length > 0 ? ` (depends on: ${dependsOn.join(', ')})` : '';
+            log('✓', `Queued: ${item.specFile} (${item.kind})${phaseInfo}${depsInfo} → ${item.id}`);
             break;
         }
 
@@ -517,8 +532,14 @@ async function handleQueueStart(): Promise<void> {
                     writeAppAgentsMd(targetDir, spec.feature.name, featureStack, result.files);
 
                     const durationMs = Date.now() - startTime;
+                    const featureSummary = buildDebrief(spec.feature.name, result, featureStack, current.specFile, durationMs);
                     markCompleted(current.id, `${result.files.length} files generated`, durationMs);
-                    logBuild(current.specFile, 'FeatureSpec', 'completed', result.files.map(f => f.filename), `${result.files.length} files generated`, durationMs);
+                    logBuild(current.specFile, 'FeatureSpec', 'completed', featureSummary, result.files.map(f => f.filename), durationMs, {
+                        model: result.model,
+                        provider: result.provider,
+                        tokensIn: result.tokenUsage?.promptTokens,
+                        tokensOut: result.tokenUsage?.completionTokens,
+                    });
                     updateSpecStatus(current.specFile, 'done');
                     gitCommit(project.path, `factory: add feature ${spec.feature.name} to ${spec.target.app}`);
                     succeeded++;
@@ -530,7 +551,9 @@ async function handleQueueStart(): Promise<void> {
                     if (!validation.passed) {
                         const durationMs = Date.now() - startTime;
                         markFailed(current.id, `Validation failed: ${validation.errors.join(', ')}`, '', durationMs);
-                        logBuild(current.specFile, 'AppSpec', 'failed', [], `Validation: ${validation.errors.join(', ')}`, durationMs);
+                        logBuild(current.specFile, 'AppSpec', 'failed', `# Build Debrief\n\n> Validation failed\n\n## Issues\n\n${validation.errors.map(e => `- ${e}`).join('\n')}`, [], durationMs, {
+                            errorSource: 'engine',
+                        });
                         updateSpecStatus(current.specFile, 'review');
                         failed++;
                         item = dequeue();
@@ -555,9 +578,16 @@ async function handleQueueStart(): Promise<void> {
                     const durationMs = Date.now() - startTime;
                     const fileNames = result.files.map(f => f.filename);
 
+                    const appSummary = buildDebrief(spec.appName, result, spec.stack, current.specFile, durationMs);
+
                     if (result.success) {
                         markCompleted(current.id, `${result.files.length} files, ${result.iterations} iteration(s)`, durationMs);
-                        logBuild(current.specFile, 'AppSpec', 'completed', fileNames, `${result.files.length} files, ${result.iterations} iteration(s)`, durationMs);
+                        logBuild(current.specFile, 'AppSpec', 'completed', appSummary, fileNames, durationMs, {
+                            model: result.model,
+                            provider: result.provider,
+                            tokensIn: result.tokenUsage?.promptTokens,
+                            tokensOut: result.tokenUsage?.completionTokens,
+                        });
                         updateSpecStatus(current.specFile, 'done');
                         gitCommit(project.path, `factory: generate ${spec.appName}`);
 
@@ -577,7 +607,13 @@ async function handleQueueStart(): Promise<void> {
                             `${result.files.length} files generated with errors`,
                             durationMs
                         );
-                        logBuild(current.specFile, 'AppSpec', 'failed', fileNames, result.errors?.join('; ') || 'Build had warnings', durationMs);
+                        logBuild(current.specFile, 'AppSpec', 'failed', appSummary, fileNames, durationMs, {
+                            model: result.model,
+                            provider: result.provider,
+                            tokensIn: result.tokenUsage?.promptTokens,
+                            tokensOut: result.tokenUsage?.completionTokens,
+                            errorSource: 'engine',
+                        });
                         updateSpecStatus(current.specFile, 'review');
                         failed++;
                     }
@@ -586,7 +622,9 @@ async function handleQueueStart(): Promise<void> {
                 const durationMs = Date.now() - startTime;
                 const msg = error instanceof Error ? error.message : String(error);
                 markFailed(current.id, msg, '', durationMs);
-                logBuild(current.specFile, current.kind, 'failed', [], msg, durationMs);
+                logBuild(current.specFile, current.kind, 'failed', `# Build Debrief\n\n> Build failed\n\n## Error\n\n${msg}`, [], durationMs, {
+                    errorSource: msg.includes('API error') || msg.includes('returned empty') ? 'llm' : 'engine',
+                });
                 updateSpecStatus(current.specFile, 'review');
                 logError(`Failed: ${msg}`);
                 failed++;
@@ -594,6 +632,20 @@ async function handleQueueStart(): Promise<void> {
 
             // Dequeue the next one — keep going
             item = dequeue();
+        }
+
+        // Check for specs blocked by dependencies
+        const remainingStats = getQueueStats();
+        if (remainingStats.pending > 0) {
+            console.log('');
+            log('!', `${remainingStats.pending} spec(s) still pending — blocked by unmet dependencies:`);
+            const allItems = listQueue();
+            for (const blocked of allItems.filter(i => i.status === 'pending')) {
+                const unmetDeps = blocked.dependsOn.filter(dep => !areDependenciesMet([dep]));
+                if (unmetDeps.length > 0) {
+                    log('  ', `  ⏳ ${blocked.specFile} — waiting for: ${unmetDeps.join(', ')}`);
+                }
+            }
         }
 
         // Push all changes at once at the end

@@ -1,5 +1,5 @@
 /**
- * Knowledge API — retrieve build history and search.
+ * Knowledge API — retrieve build history, search, and aggregate stats.
  */
 
 import { NextResponse } from 'next/server';
@@ -28,10 +28,26 @@ function getDb() {
     );
   `);
 
+  // Safely add new columns if missing
+  const cols = db.prepare(`PRAGMA table_info(builds)`).all() as { name: string }[];
+  const colNames = new Set(cols.map((c) => c.name));
+  const migrations: [string, string][] = [
+    ['model', 'TEXT'],
+    ['provider', 'TEXT'],
+    ['tokens_in', 'INTEGER DEFAULT 0'],
+    ['tokens_out', 'INTEGER DEFAULT 0'],
+    ['error_source', 'TEXT'],
+  ];
+  for (const [col, type] of migrations) {
+    if (!colNames.has(col)) {
+      db.exec(`ALTER TABLE builds ADD COLUMN ${col} ${type}`);
+    }
+  }
+
   return db;
 }
 
-/** GET — retrieve build history */
+/** GET — retrieve build history + aggregate stats */
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
@@ -72,17 +88,44 @@ export async function GET(request: Request) {
       `).all(limit);
     }
 
-    // Stats
+    // Core stats
     const total = db.prepare('SELECT COUNT(*) as count FROM builds').get() as { count: number };
     const successful = db.prepare(`SELECT COUNT(*) as count FROM builds WHERE status = 'completed'`).get() as { count: number };
     const failed = db.prepare(`SELECT COUNT(*) as count FROM builds WHERE status = 'failed'`).get() as { count: number };
     const unique = db.prepare('SELECT COUNT(DISTINCT spec_file) as count FROM builds').get() as { count: number };
 
+    // Token stats
+    const tokenStats = db.prepare(`
+      SELECT 
+        COALESCE(SUM(tokens_in), 0) as total_tokens_in,
+        COALESCE(SUM(tokens_out), 0) as total_tokens_out,
+        COALESCE(AVG(duration_ms), 0) as avg_duration_ms
+      FROM builds
+    `).get() as { total_tokens_in: number; total_tokens_out: number; avg_duration_ms: number };
+
+    // Model usage breakdown
+    const modelUsage = db.prepare(`
+      SELECT model, provider, COUNT(*) as count,
+        COALESCE(SUM(tokens_in), 0) as tokens_in,
+        COALESCE(SUM(tokens_out), 0) as tokens_out
+      FROM builds WHERE model IS NOT NULL
+      GROUP BY model, provider
+      ORDER BY count DESC
+    `).all() as { model: string; provider: string; count: number; tokens_in: number; tokens_out: number }[];
+
+    // Error breakdown
+    const errorBreakdown = db.prepare(`
+      SELECT error_source, COUNT(*) as count
+      FROM builds WHERE status = 'failed' AND error_source IS NOT NULL
+      GROUP BY error_source
+    `).all() as { error_source: string; count: number }[];
+
     db.close();
 
-    // Parse files_generated JSON
+    // Parse files_generated JSON and expose new fields
     const entries = rows.map((row: any) => ({
       ...row,
+      summary: row.output || '',
       filesGenerated: JSON.parse(row.files_generated || '[]'),
     }));
 
@@ -93,6 +136,11 @@ export async function GET(request: Request) {
         successfulBuilds: successful.count,
         failedBuilds: failed.count,
         uniqueSpecs: unique.count,
+        totalTokensIn: tokenStats.total_tokens_in,
+        totalTokensOut: tokenStats.total_tokens_out,
+        avgDurationMs: Math.round(tokenStats.avg_duration_ms),
+        modelUsage,
+        errorBreakdown,
       },
     });
   } catch (error) {

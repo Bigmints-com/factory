@@ -1,5 +1,5 @@
 {
-  "activeProject": "test-tasks",
+  "activeProject": "ubot",
   "projects": [
     {
       "id": "saveaday-monorepo",
@@ -16,13 +16,13 @@
       }
     },
     {
-      "id": "test-tasks",
-      "name": "test-tasks",
-      "path": "/Users/pretheesh/Projects/test-tasks",
-      "addedAt": "2026-02-14T20:54:40.803Z",
+      "id": "ubot",
+      "name": "ubot",
+      "path": "/Users/pretheesh/Projects/ubot",
+      "addedAt": "2026-02-15T16:48:41.944Z",
       "stack": {
-        "framework": "next.js",
-        "packageManager": "npm",
+        "framework": "react",
+        "packageManager": "pnpm",
         "linter": "EsLint + Prettier",
         "testing": "jest"
       }

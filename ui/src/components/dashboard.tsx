@@ -26,7 +26,8 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { FileText, Package, CheckCircle2, AlertCircle, Activity, Puzzle, Server, Globe, Database, Layers, ListPlus, ListOrdered, X, PanelRight, Terminal, FolderOpen, Plug, Settings, Eye, Plus, Loader2 as Spinner, Sparkles } from 'lucide-react';
+import { FileText, Package, CheckCircle2, AlertCircle, Activity, Puzzle, Server, Globe, Database, Layers, ListPlus, ListOrdered, X, PanelRight, Terminal, FolderOpen, Plug, Settings, Eye, Plus, Loader2 as Spinner, Sparkles, Rocket, GitBranch } from 'lucide-react';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface Spec {
   file: string;
@@ -39,13 +40,7 @@ interface Spec {
   features?: Record<string, any>;
 }
 
-interface Report {
-  file: string;
-  slug: string;
-  timestamp: string;
-  content: string;
-  size: number;
-}
+
 
 interface FeatureSpecItem {
   file: string;
@@ -56,6 +51,8 @@ interface FeatureSpecItem {
   target: Record<string, any>;
   pages: any[];
   model: Record<string, any>;
+  phase?: number;
+  dependsOn?: string[];
 }
 
 interface ValidationCheck {
@@ -71,8 +68,8 @@ export default function Dashboard() {
   const [showAddProject, setShowAddProject] = useState(false);
   const [specs, setSpecs] = useState<Spec[]>([]);
   const [featureSpecs, setFeatureSpecs] = useState<FeatureSpecItem[]>([]);
-  const [reports, setReports] = useState<Report[]>([]);
-  const [selectedReport, setSelectedReport] = useState<Report | null>(null);
+  const [reportEntries, setReportEntries] = useState<any[]>([]);
+  const [reportStats, setReportStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [buildOutput, setBuildOutput] = useState('');
   const [validationResult, setValidationResult] = useState<{
@@ -90,6 +87,7 @@ export default function Dashboard() {
   const [projectRefreshKey, setProjectRefreshKey] = useState(0);
   const [editingSpec, setEditingSpec] = useState<{ file: string; name: string } | null>(null);
   const [showSpecChat, setShowSpecChat] = useState(false);
+  const [isBuildingAll, setIsBuildingAll] = useState(false);
 
   const fetchSpecs = useCallback(async () => {
     try {
@@ -104,16 +102,14 @@ export default function Dashboard() {
 
   const fetchReports = useCallback(async () => {
     try {
-      const res = await fetch('/api/reports');
+      const res = await fetch('/api/knowledge?limit=100');
       const data = await res.json();
-      setReports(data.reports || []);
-      if (data.reports?.[0] && !selectedReport) {
-        setSelectedReport(data.reports[0]);
-      }
+      setReportEntries(data.entries || []);
+      setReportStats(data.stats || null);
     } catch {
       console.error('Failed to fetch reports');
     }
-  }, [selectedReport]);
+  }, []);
 
   const fetchProjects = useCallback(async () => {
     try {
@@ -304,12 +300,12 @@ export default function Dashboard() {
     }
   };
 
-  const handleEnqueue = async (specFile: string, kind: string) => {
+  const handleEnqueue = async (specFile: string, kind: string, opts?: { phase?: number; dependsOn?: string[] }) => {
     try {
       const res = await fetch('/api/queue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ specFile, kind }),
+        body: JSON.stringify({ specFile, kind, phase: opts?.phase, dependsOn: opts?.dependsOn }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -324,6 +320,81 @@ export default function Dashboard() {
     } catch {
       setBuildOutput('Failed to enqueue spec');
       toast.error('Failed to enqueue spec');
+    }
+  };
+
+  const handleBuildAll = async () => {
+    setIsBuildingAll(true);
+    let enqueued = 0;
+    let errors = 0;
+
+    try {
+      // 1. Enqueue app specs first (phase 0)
+      for (const spec of specs) {
+        try {
+          const res = await fetch('/api/queue', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ specFile: spec.file, kind: 'AppSpec', phase: 0, dependsOn: [] }),
+          });
+          if (res.ok) {
+            enqueued++;
+          } else {
+            const data = await res.json();
+            // Skip already-queued items silently
+            if (res.status !== 409) {
+              errors++;
+              toast.error(`Failed: ${spec.file}`, { description: data.error });
+            }
+          }
+        } catch {
+          errors++;
+        }
+      }
+
+      // 2. Enqueue feature specs sorted by phase
+      const sortedFeatures = [...featureSpecs].sort((a, b) => (a.phase ?? 0) - (b.phase ?? 0));
+      for (const fs of sortedFeatures) {
+        try {
+          const res = await fetch('/api/queue', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              specFile: fs.file,
+              kind: 'FeatureSpec',
+              phase: fs.phase ?? 0,
+              dependsOn: fs.dependsOn ?? [],
+            }),
+          });
+          if (res.ok) {
+            enqueued++;
+          } else {
+            const data = await res.json();
+            if (res.status !== 409) {
+              errors++;
+              toast.error(`Failed: ${String(fs.feature?.name || fs.file)}`, { description: data.error });
+            }
+          }
+        } catch {
+          errors++;
+        }
+      }
+
+      if (enqueued > 0) {
+        toast.success(`Queued ${enqueued} spec${enqueued !== 1 ? 's' : ''}`, {
+          description: errors > 0 ? `${errors} failed` : 'Switch to Queue tab to start processing',
+        });
+        setActiveTab('queue');
+      } else if (errors > 0) {
+        toast.error(`Failed to queue any specs (${errors} errors)`);
+      } else {
+        toast.info('All specs are already in the queue');
+        setActiveTab('queue');
+      }
+    } catch {
+      toast.error('Build All failed');
+    } finally {
+      setIsBuildingAll(false);
     }
   };
 
@@ -348,20 +419,7 @@ export default function Dashboard() {
       )}
 
       {/* Stats row */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <Card className="cursor-pointer hover:border-primary/30 transition-colors" onClick={() => { setShowAddProject(true); }}>
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-violet-500/10">
-                <FolderOpen className="h-5 w-5 text-violet-500" />
-              </div>
-              <div>
-                <p className="text-2xl font-bold">{projectCount}</p>
-                <p className="text-xs text-muted-foreground">Projects</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Card>
           <CardContent className="pt-6">
             <div className="flex items-center gap-3">
@@ -408,8 +466,8 @@ export default function Dashboard() {
                 <Package className="h-5 w-5 text-blue-500" />
               </div>
               <div>
-                <p className="text-2xl font-bold">{reports.length}</p>
-                <p className="text-xs text-muted-foreground">Reports</p>
+                <p className="text-2xl font-bold">{reportStats?.totalBuilds || 0}</p>
+                <p className="text-xs text-muted-foreground">Builds</p>
               </div>
             </div>
           </CardContent>
@@ -531,14 +589,26 @@ export default function Dashboard() {
               <span className="font-medium text-foreground">{featureSpecs.length}</span> Feature Specs
             </span>
           </div>
-          <Button
-            size="sm"
-            onClick={() => setShowSpecChat(true)}
-            className="h-8 text-xs gap-1.5"
-          >
-            <Sparkles className="h-3.5 w-3.5" />
-            New Spec
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleBuildAll}
+              disabled={isBuildingAll || (specs.length === 0 && featureSpecs.length === 0)}
+              className="h-8 text-xs gap-1.5"
+            >
+              {isBuildingAll ? <Spinner className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
+              {isBuildingAll ? 'Queueing...' : 'Build All'}
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => setShowSpecChat(true)}
+              className="h-8 text-xs gap-1.5"
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              New Spec
+            </Button>
+          </div>
         </div>
 
         {/* Spec Chat Dialog */}
@@ -637,7 +707,13 @@ export default function Dashboard() {
               ))}
 
               {/* Feature Specs */}
-              {featureSpecs.map((fs) => (
+              <TooltipProvider>
+              {featureSpecs.map((fs) => {
+                const phaseLabel = fs.phase ? `P${fs.phase}` : 'P0';
+                const phaseColor = fs.phase === 1 ? 'text-blue-400 border-blue-500/30' : fs.phase === 2 ? 'text-amber-400 border-amber-500/30' : fs.phase === 3 ? 'text-rose-400 border-rose-500/30' : 'text-muted-foreground border-muted';
+                const deps = fs.dependsOn ?? [];
+                const isSequenced = !!(fs.phase || deps.length > 0);
+                return (
                 <div
                   key={fs.file}
                   className="flex items-center gap-4 px-4 py-3 hover:bg-muted/40 transition-colors border-l-[3px] border-l-purple-500"
@@ -647,6 +723,21 @@ export default function Dashboard() {
                       <Puzzle className="h-4 w-4 text-purple-400 shrink-0" />
                       <span className="font-medium text-sm truncate">{String(fs.feature?.name || fs.file)}</span>
                       <Badge variant="outline" className="text-[10px] border-purple-500/30 text-purple-400 shrink-0">Feature</Badge>
+                      <Badge variant="outline" className={`text-[10px] shrink-0 ${phaseColor}`}>{phaseLabel}</Badge>
+                      {deps.length > 0 && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Badge variant="outline" className="text-[10px] shrink-0 gap-1 cursor-help border-muted-foreground/30">
+                              <GitBranch className="h-2.5 w-2.5" />
+                              {deps.length}
+                            </Badge>
+                          </TooltipTrigger>
+                          <TooltipContent side="top" className="max-w-xs">
+                            <p className="text-xs font-medium mb-1">Depends on:</p>
+                            {deps.map((d) => <p key={d} className="text-xs text-muted-foreground">• {d}</p>)}
+                          </TooltipContent>
+                        </Tooltip>
+                      )}
                       {fs.target?.app && (
                         <span className="text-xs text-muted-foreground">→ {String(fs.target.app)}</span>
                       )}
@@ -676,27 +767,45 @@ export default function Dashboard() {
                     >
                       {activeAction?.type === 'feature-validate' && activeAction?.file === fs.file ? 'Validating...' : 'Validate'}
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 px-2.5 text-xs"
-                      onClick={() => handleFeatureAction(fs.file, 'build')}
-                      disabled={!!activeAction}
-                    >
-                      {activeAction?.type === 'feature-build' && activeAction?.file === fs.file ? 'Building...' : 'Build'}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7"
-                      onClick={() => handleEnqueue(fs.file, 'FeatureSpec')}
-                      title="Add to queue"
-                    >
-                      <ListPlus className="h-3.5 w-3.5" />
-                    </Button>
+                    {!isSequenced && (
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2.5 text-xs"
+                          onClick={() => handleFeatureAction(fs.file, 'build')}
+                          disabled={!!activeAction}
+                        >
+                          {activeAction?.type === 'feature-build' && activeAction?.file === fs.file ? 'Building...' : 'Build'}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          onClick={() => handleEnqueue(fs.file, 'FeatureSpec', { phase: fs.phase, dependsOn: fs.dependsOn })}
+                          title="Add to queue"
+                        >
+                          <ListPlus className="h-3.5 w-3.5" />
+                        </Button>
+                      </>
+                    )}
+                    {isSequenced && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Badge variant="outline" className="text-[10px] text-muted-foreground border-muted cursor-help">
+                            Use Build All
+                          </Badge>
+                        </TooltipTrigger>
+                        <TooltipContent side="top">
+                          <p className="text-xs">This spec is sequenced — use Build All to queue in dependency order</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
                   </div>
                 </div>
-              ))}
+                );
+              })}
+              </TooltipProvider>
             </CardContent>
           </Card>
         )}
@@ -712,9 +821,8 @@ export default function Dashboard() {
         <Skeleton className="h-[600px] rounded-lg" />
       ) : (
         <ReportViewer
-          reports={reports}
-          selectedReport={selectedReport}
-          onSelectReport={setSelectedReport}
+          entries={reportEntries}
+          stats={reportStats || { totalBuilds: 0, successfulBuilds: 0, failedBuilds: 0, uniqueSpecs: 0, totalTokensIn: 0, totalTokensOut: 0, avgDurationMs: 0, modelUsage: [], errorBreakdown: [] }}
         />
       )}
     </div>
@@ -751,7 +859,7 @@ export default function Dashboard() {
           </div>
         ) : (
         <div className="p-8">
-          {/* Page header — only for dashboard, specs, reports */}
+          {/* Page header */}
           {['dashboard', 'specs', 'reports', 'integrations', 'settings'].includes(activeTab) && (
             <div className="mb-8 flex items-start justify-between">
               <div>
@@ -763,7 +871,7 @@ export default function Dashboard() {
                   {activeTab === 'settings' && 'Settings'}
                 </h1>
                 <p className="text-sm text-muted-foreground mt-1">
-                  {activeTab === 'dashboard' && 'Factory overview and quick actions'}
+                  {activeTab === 'dashboard' && 'Overview for the active project'}
                   {activeTab === 'specs' && 'Manage your app specifications'}
                   {activeTab === 'reports' && 'View generated build reports'}
                   {activeTab === 'integrations' && 'Connect external services and tools'}

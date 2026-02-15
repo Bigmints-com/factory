@@ -19,6 +19,13 @@ import { log, logStep, logError } from './log.ts';
 
 const PIPELINE_TIMEOUT_MS = 4 * 60 * 1000; // 4 minutes — bail before the API route times out
 
+/** Token usage from a single LLM call */
+interface LLMResponse {
+    text: string;
+    tokensIn: number;
+    tokensOut: number;
+}
+
 // ─── Main Pipeline ───────────────────────────────────────
 
 /**
@@ -33,6 +40,8 @@ export async function runPipeline(
     const { provider, model } = requireActiveProvider();
     const slug = specSlug(spec);
     const pipelineStart = Date.now();
+    let totalTokensIn = 0;
+    let totalTokensOut = 0;
 
     log('●', `Using ${provider.name} → ${model}`);
 
@@ -43,7 +52,10 @@ export async function runPipeline(
     let plan: BuildPlan;
     if (profile.needsPlan) {
         logStep(1, 5, 'Planning build...');
-        plan = await planBuild(spec, context, provider, model);
+        const planResult = await planBuild(spec, context, provider, model);
+        plan = planResult.plan;
+        totalTokensIn += planResult.tokensIn;
+        totalTokensOut += planResult.tokensOut;
         log('✓', `Plan: ${plan.files.length} files, ${plan.decisions.length} decisions`);
         // Log planned files
         for (const f of plan.files) {
@@ -66,7 +78,10 @@ export async function runPipeline(
     // Step 2: Build (first attempt)
     logStep(2, 5, 'Generating code...');
     log('→', `Sending prompt to ${provider.name} (${model})...`);
-    let files = await executeBuild(spec, context, plan, provider, model);
+    let buildResult = await executeBuild(spec, context, plan, provider, model);
+    let files = buildResult.files;
+    totalTokensIn += buildResult.tokensIn;
+    totalTokensOut += buildResult.tokensOut;
     log('✓', `Generated ${files.length} files`);
 
     // Log generated file groups
@@ -111,7 +126,10 @@ export async function runPipeline(
 
             iteration++;
             log('●', `Feeding errors back to LLM...`);
-            files = await iterateBuild(spec, context, plan, files, errors, provider, model);
+            const iterResult = await iterateBuild(spec, context, plan, files, errors, provider, model);
+            files = iterResult.files;
+            totalTokensIn += iterResult.tokensIn;
+            totalTokensOut += iterResult.tokensOut;
             log('✓', `Regenerated ${files.length} files`);
         }
     }
@@ -122,6 +140,9 @@ export async function runPipeline(
         plan,
         iterations: iteration + 1,
         errors: errors.length > 0 ? errors : undefined,
+        tokenUsage: { promptTokens: totalTokensIn, completionTokens: totalTokensOut },
+        model,
+        provider: provider.id,
     };
 }
 
@@ -140,7 +161,7 @@ export async function runFeaturePipeline(
     // Build prompt for feature generation
     const prompt = buildFeaturePrompt(spec, context);
     const raw = await callProvider(provider, model, prompt);
-    const files = parseGeneratedFiles(raw);
+    const files = parseGeneratedFiles(raw.text);
 
     if (files.length === 0) {
         throw new Error('LLM response did not contain any parseable files.');
@@ -155,6 +176,9 @@ export async function runFeaturePipeline(
             decisions: [],
         },
         iterations: 1,
+        tokenUsage: { promptTokens: raw.tokensIn, completionTokens: raw.tokensOut },
+        model,
+        provider: provider.id,
     };
 }
 
@@ -168,7 +192,7 @@ async function planBuild(
     context: ProjectContext,
     provider: LLMProvider,
     model: string,
-): Promise<BuildPlan> {
+): Promise<{ plan: BuildPlan; tokensIn: number; tokensOut: number }> {
     const contextBlock = formatContext(context);
     const specBlock = formatSpec(spec);
 
@@ -193,15 +217,19 @@ Output ONLY the JSON. No markdown, no explanation.`;
 
     try {
         // Strip markdown code fences if present
-        const cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-        return JSON.parse(cleaned) as BuildPlan;
+        const cleaned = raw.text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        return { plan: JSON.parse(cleaned) as BuildPlan, tokensIn: raw.tokensIn, tokensOut: raw.tokensOut };
     } catch {
         // If parsing fails, create a sensible default plan
         log('!', 'Could not parse plan JSON — using default plan');
         return {
-            files: ['package.json', 'tsconfig.json', 'src/app/layout.tsx', 'src/app/page.tsx'],
-            architecture: `${spec.stack.framework} app with ${spec.stack.database || 'local state'}`,
-            decisions: ['Using spec defaults'],
+            plan: {
+                files: ['package.json', 'tsconfig.json', 'src/app/layout.tsx', 'src/app/page.tsx'],
+                architecture: `${spec.stack.framework} app with ${spec.stack.database || 'local state'}`,
+                decisions: ['Using spec defaults'],
+            },
+            tokensIn: raw.tokensIn,
+            tokensOut: raw.tokensOut,
         };
     }
 }
@@ -217,17 +245,17 @@ async function executeBuild(
     plan: BuildPlan,
     provider: LLMProvider,
     model: string,
-): Promise<GeneratedFile[]> {
+): Promise<{ files: GeneratedFile[]; tokensIn: number; tokensOut: number }> {
     const prompt = buildAppPrompt(spec, context, plan);
 
     log('→', `Prompt: ${prompt.length.toLocaleString()} chars`);
     log('→', `Calling ${provider.name}...`);
 
     const raw = await callProvider(provider, model, prompt);
-    log('✓', `Response received (${raw.length.toLocaleString()} chars)`);
+    log('✓', `Response received (${raw.text.length.toLocaleString()} chars)`);
 
     log('→', `Parsing generated files...`);
-    const files = parseGeneratedFiles(raw);
+    const files = parseGeneratedFiles(raw.text);
     if (files.length === 0) {
         throw new Error(
             'LLM response contained no parseable files.\n' +
@@ -242,7 +270,7 @@ async function executeBuild(
         log('→', `  ${f.filename} (${sizeLabel})`);
     }
 
-    return files;
+    return { files, tokensIn: raw.tokensIn, tokensOut: raw.tokensOut };
 }
 
 /**
@@ -448,7 +476,7 @@ async function iterateBuild(
     errors: string[],
     provider: LLMProvider,
     model: string,
-): Promise<GeneratedFile[]> {
+): Promise<{ files: GeneratedFile[]; tokensIn: number; tokensOut: number }> {
     const filesSummary = previousFiles.map(f => `- ${f.filename} (${f.content.length} chars)`).join('\n');
 
     const prompt = `You previously generated code for an application. There were errors that need fixing.
@@ -477,14 +505,14 @@ Output EVERY file using this exact format:
 Output ONLY the files. No explanations.`;
 
     const raw = await callProvider(provider, model, prompt);
-    const files = parseGeneratedFiles(raw);
+    const files = parseGeneratedFiles(raw.text);
 
     if (files.length === 0) {
         log('!', 'Iteration produced no files — keeping previous version');
-        return previousFiles;
+        return { files: previousFiles, tokensIn: raw.tokensIn, tokensOut: raw.tokensOut };
     }
 
-    return files;
+    return { files, tokensIn: raw.tokensIn, tokensOut: raw.tokensOut };
 }
 
 // ─── Prompt Builders ─────────────────────────────────────
@@ -648,7 +676,7 @@ function requireActiveProvider(): { provider: LLMProvider; model: string } {
     return { provider, model: settings.buildModel };
 }
 
-async function callProvider(provider: LLMProvider, model: string, prompt: string): Promise<string> {
+async function callProvider(provider: LLMProvider, model: string, prompt: string): Promise<LLMResponse> {
     switch (provider.id) {
         case 'gemini':
             if (!provider.apiKey) throw new Error('Gemini API key not configured');
@@ -663,7 +691,7 @@ async function callProvider(provider: LLMProvider, model: string, prompt: string
     }
 }
 
-async function callGemini(apiKey: string, model: string, prompt: string): Promise<string> {
+async function callGemini(apiKey: string, model: string, prompt: string): Promise<LLMResponse> {
     log('→', `Calling Gemini (${model})...`);
 
     const res = await fetch(
@@ -688,14 +716,16 @@ async function callGemini(apiKey: string, model: string, prompt: string): Promis
     if (!text) throw new Error('Gemini returned empty response');
 
     const usage = data.usageMetadata;
+    const tokensIn = usage?.promptTokenCount || 0;
+    const tokensOut = usage?.candidatesTokenCount || 0;
     if (usage) {
-        log('  ', `  Tokens: ${usage.promptTokenCount || '?'} in / ${usage.candidatesTokenCount || '?'} out`);
+        log('  ', `  Tokens: ${tokensIn} in / ${tokensOut} out`);
     }
 
-    return text;
+    return { text, tokensIn, tokensOut };
 }
 
-async function callOpenAI(apiKey: string, model: string, prompt: string): Promise<string> {
+async function callOpenAI(apiKey: string, model: string, prompt: string): Promise<LLMResponse> {
     log('→', `Calling OpenAI (${model})...`);
 
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -725,14 +755,16 @@ async function callOpenAI(apiKey: string, model: string, prompt: string): Promis
     if (!text) throw new Error('OpenAI returned empty response');
 
     const usage = data.usage;
+    const tokensIn = usage?.prompt_tokens || 0;
+    const tokensOut = usage?.completion_tokens || 0;
     if (usage) {
-        log('  ', `  Tokens: ${usage.prompt_tokens || '?'} in / ${usage.completion_tokens || '?'} out`);
+        log('  ', `  Tokens: ${tokensIn} in / ${tokensOut} out`);
     }
 
-    return text;
+    return { text, tokensIn, tokensOut };
 }
 
-async function callOllama(baseUrl: string, model: string, prompt: string): Promise<string> {
+async function callOllama(baseUrl: string, model: string, prompt: string): Promise<LLMResponse> {
     log('→', `Calling Ollama (${model}) at ${baseUrl}...`);
 
     const res = await fetch(`${baseUrl}/api/generate`, {
@@ -755,11 +787,13 @@ async function callOllama(baseUrl: string, model: string, prompt: string): Promi
     const text = data.response;
     if (!text) throw new Error('Ollama returned empty response');
 
-    if (data.eval_count) {
-        log('  ', `  Tokens generated: ${data.eval_count}`);
+    const tokensIn = data.prompt_eval_count || 0;
+    const tokensOut = data.eval_count || 0;
+    if (tokensOut) {
+        log('  ', `  Tokens: ${tokensIn} in / ${tokensOut} out`);
     }
 
-    return text;
+    return { text, tokensIn, tokensOut };
 }
 
 // ─── Response Parser ─────────────────────────────────────

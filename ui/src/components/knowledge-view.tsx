@@ -30,7 +30,7 @@ interface BuildEntry {
   status: string;
   files_generated: string;
   filesGenerated: string[];
-  output: string;
+  summary: string;
   notes: string;
 }
 
@@ -223,10 +223,47 @@ export function KnowledgeView() {
                         </div>
                       )}
 
-                      {entry.output && (
-                        <div className="rounded-md bg-card border p-3 max-h-48 overflow-y-auto">
-                          <p className="text-xs text-muted-foreground font-medium mb-1">Build Output</p>
-                          <pre className="text-xs font-mono text-foreground/80 whitespace-pre-wrap">{entry.output}</pre>
+                      {entry.summary && (
+                        <div className="rounded-md bg-card border p-4 space-y-2">
+                          {entry.summary.split('\n').map((line, i) => {
+                            const trimmed = line.trim();
+                            if (!trimmed) return null;
+                            // Heading
+                            if (trimmed.startsWith('# ')) {
+                              return <p key={i} className="text-sm font-semibold text-foreground">{trimmed.slice(2)}</p>;
+                            }
+                            if (trimmed.startsWith('## ')) {
+                              return <p key={i} className="text-xs font-semibold text-foreground mt-2 uppercase tracking-wide">{trimmed.slice(3)}</p>;
+                            }
+                            // Blockquote (outcome)
+                            if (trimmed.startsWith('> ')) {
+                              return (
+                                <div key={i} className="border-l-2 border-primary/40 pl-3 py-0.5">
+                                  <p className="text-xs text-primary font-medium">{trimmed.slice(2)}</p>
+                                </div>
+                              );
+                            }
+                            // Table header/separator — skip
+                            if (trimmed.startsWith('|---') || trimmed.startsWith('| Directory')) {
+                              return null;
+                            }
+                            // Table row
+                            if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+                              const cells = trimmed.split('|').filter(Boolean).map(c => c.trim());
+                              return (
+                                <div key={i} className="flex gap-4 text-xs text-muted-foreground font-mono pl-2">
+                                  <span className="flex-1">{cells[0]}</span>
+                                  <span>{cells[1]}</span>
+                                </div>
+                              );
+                            }
+                            // Bullet
+                            if (trimmed.startsWith('- ')) {
+                              return <p key={i} className="text-xs text-muted-foreground pl-2">• {trimmed.slice(2)}</p>;
+                            }
+                            // Plain text
+                            return <p key={i} className="text-xs text-muted-foreground">{trimmed}</p>;
+                          })}
                         </div>
                       )}
                     </div>

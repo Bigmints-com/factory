@@ -111,6 +111,8 @@ export interface FeatureSpec {
     target: {
         app: string;
     };
+    phase?: number;              // 1 = foundation, 2 = core, 3 = polish
+    dependsOn?: string[];        // slugs of other feature specs that must complete first
     model?: {
         collection: string;
         fields: Array<{
@@ -215,6 +217,12 @@ export interface BuildResult {
     plan: BuildPlan;
     iterations: number;
     errors?: string[];
+    /** Token usage accumulated across all LLM calls in this build */
+    tokenUsage?: { promptTokens: number; completionTokens: number };
+    /** Model used for generation */
+    model?: string;
+    /** Provider used (gemini/openai/ollama) */
+    provider?: string;
 }
 
 export type TaskType = 'full-app' | 'frontend' | 'scaffold' | 'static' | 'config';

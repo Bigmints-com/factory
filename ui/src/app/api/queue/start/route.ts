@@ -229,12 +229,12 @@ export async function POST() {
   }
 }
 
-/** Log a build to the knowledge table. */
+/** Log a build to the knowledge table with a structured debrief summary. */
 function logBuild(
   db: Database.Database,
   item: any,
   status: string,
-  output: string,
+  rawOutput: string,
   durationMs: number,
 ) {
   // Ensure builds table exists
@@ -256,8 +256,50 @@ function logBuild(
   const id = `build_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
   // Extract generated files from output
-  const fileMatches = output.match(/✓\s+(.+)/g) || [];
+  const fileMatches = rawOutput.match(/✓\s+(.+)/g) || [];
   const filesGenerated = fileMatches.map((m: string) => m.replace(/^✓\s+/, '').trim());
+
+  // Group files by directory
+  const dirCounts = new Map<string, number>();
+  for (const f of filesGenerated) {
+    const parts = f.split('/');
+    const dir = parts.length > 1 ? parts.slice(0, -1).join('/') : '.';
+    dirCounts.set(dir, (dirCounts.get(dir) || 0) + 1);
+  }
+  const dirTable = Array.from(dirCounts.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([dir, count]) => `| ${dir} | ${count} |`)
+    .join('\n');
+
+  const specName = item.spec_file?.split('/').pop()?.replace('.yaml', '') || item.spec_file;
+  const outcome = status === 'failed'
+    ? 'Build failed — check queue output for details'
+    : `Successfully generated ${filesGenerated.length} file(s)`;
+
+  const summary = `# Build Debrief: ${specName}
+
+> ${outcome}
+
+## What Was Built
+- **Spec**: \`${item.spec_file}\`
+- **Type**: ${item.kind === 'FeatureSpec' ? 'Feature' : 'App'}
+
+## Files Generated
+
+${filesGenerated.length} files across ${dirCounts.size} director${dirCounts.size === 1 ? 'y' : 'ies'}
+
+| Directory | Files |
+|---|---|
+${dirTable || '| — | 0 |'}
+
+## Duration
+
+Built in ${(durationMs / 1000).toFixed(1)}s.
+`;
+
+  const oneLiner = status === 'failed'
+    ? 'Build failed'
+    : `Built ${filesGenerated.length} file(s) in ${(durationMs / 1000).toFixed(1)}s`;
 
   db.prepare(`
     INSERT INTO builds (id, spec_file, kind, timestamp, duration_ms, status, files_generated, output, notes)
@@ -270,7 +312,7 @@ function logBuild(
     durationMs,
     status,
     JSON.stringify(filesGenerated),
-    output,
-    status === 'failed' ? 'Build failed — check output for errors' : `Build completed successfully (${filesGenerated.length} files)`
+    summary,
+    oneLiner,
   );
 }

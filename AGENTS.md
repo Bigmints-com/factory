@@ -37,8 +37,8 @@ saveaday-factory/
 | `generate.ts` | Orchestrates LLM calls: plan → build → test → iterate. Real toolchain testing   |
 | `writer.ts`   | Writes files, runs `npm install`, git commit/push, knowledge entries, AGENTS.md |
 | `db.ts`       | SQLite via `better-sqlite3`: queue_items, builds, queue_state tables            |
-| `queue.ts`    | Enqueue, dequeue, mark status, retry, stats, running state                      |
-| `types.ts`    | AppSpec, FeatureSpec, BridgeConfig, BuildResult, LLMProvider, etc.              |
+| `queue.ts`    | Dependency-aware queue: enqueue, dequeue (phase + dependsOn gating), stats      |
+| `types.ts`    | AppSpec, FeatureSpec (incl. `phase`, `dependsOn`), BridgeConfig, BuildResult    |
 | `log.ts`      | Coloured step/error/success logging                                             |
 
 ## Build Pipeline
@@ -81,13 +81,20 @@ Updated in the YAML file itself via `updateSpecStatus()`.
 
 YAML files in `.factory/specs/apps/` (app specs) and `.factory/specs/features/` (feature specs). Define the app's stack, data model, pages, auth, and deployment.
 
+**Feature specs** support two additional fields for build ordering:
+
+- `phase: 1` — Build phase (1 = foundation, 2 = core, 3 = polish). Lower phases build first.
+- `dependsOn: [auth-system, data-models]` — Slugs of other specs that must complete before this spec can build. The engine enforces this — a spec will NOT dequeue until all its dependencies are `completed`.
+
 ### Bridge
 
 The `.factory/` folder inside a connected project repo. Contains `factory.yaml` (manifest), `knowledge/` (build history), and `specs/` subdirectories.
 
 ### Queue
 
-SQLite-backed (`factory.db`) build queue. Items: `pending → running → completed | failed`. Supports priority ordering, retry, batch processing, and autonomous `queue start`.
+SQLite-backed (`factory.db`) build queue with **dependency-aware scheduling**. Items: `pending → running → completed | failed`. The queue dequeues items in phase order (ascending) and only processes a spec when all its `dependsOn` specs are `completed`. Supports priority, retry, batch processing, and autonomous `queue start`.
+
+When `queue start` finishes, it reports any specs still blocked by unmet dependencies.
 
 ### Knowledge Feedback
 

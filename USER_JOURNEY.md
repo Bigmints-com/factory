@@ -85,6 +85,9 @@ feature:
 target:
   app: booking_app
 
+phase: 2 # Phase 1 = foundation, 2 = core, 3 = polish
+dependsOn: [auth-system] # Must complete before this spec builds
+
 model:
   collection: recurringSchedules
   fields:
@@ -217,23 +220,26 @@ Generates a Markdown report with files generated, model summary, and apply instr
 
 ## Phase 5: Queue Processing
 
-For batch builds, the **Queue** system manages execution:
+For batch builds, the **Queue** system manages execution with **dependency-aware scheduling**:
 
 ```mermaid
 stateDiagram-v2
     [*] --> Pending: Enqueue
-    Pending --> Running: Dequeue
+    Pending --> Running: Dequeue (deps met)
+    Pending --> Pending: Skip (deps not met)
     Running --> Completed: Success
     Running --> Failed: Error
     Failed --> Pending: Retry
     Completed --> [*]
 ```
 
-- **Enqueue** — Add any spec (app or feature) to the queue via UI or CLI
-- **Priority ordering** — Higher priority items run first, then FIFO
+- **Enqueue** — Add any spec (app or feature) to the queue via UI or CLI. Phase and dependencies are auto-detected from the spec.
+- **Phase ordering** — Lower phase numbers build first (P1 before P2 before P3). App specs are treated as phase 0.
+- **Dependency gating** — A spec with `dependsOn: [auth-system]` will NOT dequeue until `auth-system` has `completed` status.
 - **Status tracking** — `pending` → `running` → `completed` / `failed`
 - **Retry** — Failed items can be retried (reset to pending)
 - **SQLite storage** — Queue state persists across restarts in `factory.db`
+- **Blocked reporting** — After processing, `queue start` reports which specs remain blocked and their unmet dependencies
 
 ---
 

@@ -114,6 +114,27 @@ export function validateFeatureSpec(spec: FeatureSpec): ValidationResult {
         errors.push('target.app is required');
     }
 
+    // Validate phase
+    if (spec.phase !== undefined && (typeof spec.phase !== 'number' || spec.phase < 1 || spec.phase > 10)) {
+        errors.push('phase must be a number between 1 and 10');
+    }
+
+    // Validate dependsOn
+    if (spec.dependsOn) {
+        if (!Array.isArray(spec.dependsOn)) {
+            errors.push('dependsOn must be an array of spec slugs');
+        } else {
+            for (const dep of spec.dependsOn) {
+                if (typeof dep !== 'string' || !/^[a-z][a-z0-9-]*$/.test(dep)) {
+                    errors.push(`Invalid dependency slug "${dep}" — must be lowercase alphanumeric with hyphens`);
+                }
+                if (dep === spec.feature?.slug) {
+                    errors.push(`Spec cannot depend on itself ("${dep}")`);
+                }
+            }
+        }
+    }
+
     return { passed: errors.length === 0, errors };
 }
 

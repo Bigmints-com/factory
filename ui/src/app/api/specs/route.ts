@@ -92,6 +92,8 @@ export async function GET() {
             pages: parsed.pages || [],
             model: parsed.model || {},
             navigation: parsed.navigation || {},
+            phase: parsed.phase ?? 0,
+            dependsOn: parsed.dependsOn ?? [],
           };
         } catch {
           return { file: `features/${file}`, kind: 'FeatureSpec' as const, valid: false, error: 'Failed to parse' };
@@ -112,7 +114,7 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { name, content } = body;
+    const { name, content, kind } = body;
 
     if (!name || typeof name !== 'string') {
       return NextResponse.json({ error: 'name is required' }, { status: 400 });
@@ -126,8 +128,9 @@ export async function POST(request: Request) {
 
     const filename = `${slug.replace(/_/g, '-')}.yaml`;
 
-    // Resolve target directory
-    const { apps: targetDir } = getSpecsDirs();
+    // Resolve target directory — features go to specs/features/, apps go to specs/apps/
+    const { apps: appsDir, features: featuresDir } = getSpecsDirs();
+    const targetDir = kind === 'feature' ? featuresDir : appsDir;
 
     if (!targetDir) {
       return NextResponse.json(

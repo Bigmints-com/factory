@@ -91,12 +91,14 @@ Or — the real power — queue up multiple specs for autonomous processing:
 
 ```
 factory queue add specs/apps/inventory-tracker.yaml
-factory queue add specs/apps/crm-dashboard.yaml
-factory queue add specs/features/add-barcode-scanner.yaml
+factory queue add specs/features/auth-system.yaml
+factory queue add specs/features/barcode-scanner.yaml
 factory queue start
 ```
 
 The last command kicks off the autonomous loop. The Factory will process every queued item, one after another, without stopping.
+
+> **Dependency-aware ordering**: Feature specs can declare `phase` (1 = foundation, 2 = core, 3 = polish) and `dependsOn` (a list of spec slugs that must complete first). The queue processes items in phase order and skips any spec whose dependencies haven't completed yet. When all processable items are done, it reports which specs remain blocked and why.
 
 ---
 
@@ -215,9 +217,12 @@ You can check this from the UI or by looking at the spec file.
 Each queue item tracks:
 
 - Status: `pending` → `running` → `completed` / `failed`
+- Phase and dependencies (`dependsOn` slugs)
 - Start time, end time, duration
 - Output logs
 - Error messages (if any)
+
+The queue dequeues in **phase order** and only processes items whose `dependsOn` specs are all `completed`.
 
 #### Build History (in `factory.db`)
 
@@ -249,18 +254,18 @@ The UI reads directly from the same files and database the engine uses — `proj
 
 ## The Engine Files
 
-| File          | What it does                                          |
-| ------------- | ----------------------------------------------------- |
-| `cli.ts`      | Receives commands, dispatches to the right handler    |
-| `config.ts`   | Reads/writes project settings and factory.yaml        |
-| `spec.ts`     | Loads specs, validates them, updates their status     |
-| `context.ts`  | Gathers knowledge and conventions from the repo       |
-| `generate.ts` | Runs the LLM pipeline (plan → build → test → iterate) |
-| `writer.ts`   | Writes files to disk, runs npm install, handles git   |
-| `db.ts`       | SQLite database for queue and build history           |
-| `queue.ts`    | Queue operations (enqueue, dequeue, status tracking)  |
-| `types.ts`    | TypeScript types shared across all modules            |
-| `log.ts`      | Colored, structured logging                           |
+| File          | What it does                                                 |
+| ------------- | ------------------------------------------------------------ |
+| `cli.ts`      | Receives commands, dispatches to the right handler           |
+| `config.ts`   | Reads/writes project settings and factory.yaml               |
+| `spec.ts`     | Loads specs, validates them, updates their status            |
+| `context.ts`  | Gathers knowledge and conventions from the repo              |
+| `generate.ts` | Runs the LLM pipeline (plan → build → test → iterate)        |
+| `writer.ts`   | Writes files to disk, runs npm install, handles git          |
+| `db.ts`       | SQLite database for queue and build history                  |
+| `queue.ts`    | Queue operations (dependency-aware dequeue, enqueue, status) |
+| `types.ts`    | TypeScript types shared across all modules                   |
+| `log.ts`      | Colored, structured logging                                  |
 
 ---
 
@@ -275,3 +280,5 @@ The UI reads directly from the same files and database the engine uses — `proj
 4. **Queue-first** — The whole system is designed around batch processing. Queue up 10 specs, start it, go to bed. Wake up to 10 committed applications.
 
 5. **Your tools, your rules** — The engine uses whatever linter, test runner, and package manager you choose in the spec. ESLint or Biome. Vitest or Jest. npm or pnpm. Your call.
+
+6. **Dependency-aware scheduling** — Feature specs declare `phase` and `dependsOn`. The queue builds foundation specs first and waits for dependencies to complete before building dependent specs. You can queue everything at once — the engine figures out the right order.
