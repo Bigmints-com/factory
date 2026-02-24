@@ -19,6 +19,8 @@ import {
   ChevronDown,
   ChevronRight,
   Layers,
+  Cpu,
+  Coins,
 } from 'lucide-react';
 
 interface BuildEntry {
@@ -32,6 +34,10 @@ interface BuildEntry {
   filesGenerated: string[];
   summary: string;
   notes: string;
+  model: string | null;
+  provider: string | null;
+  tokens_in: number;
+  tokens_out: number;
 }
 
 interface KnowledgeStats {
@@ -87,6 +93,20 @@ export function KnowledgeView() {
 
   const specName = (path: string) => {
     return path.split('/').pop()?.replace('.yaml', '') || path;
+  };
+
+  /** Render inline markdown (bold and code) */
+  const renderInlineMarkdown = (text: string) => {
+    const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+    return parts.map((part, i) => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        return <strong key={i} className="font-semibold text-foreground">{part.slice(2, -2)}</strong>;
+      }
+      if (part.startsWith('`') && part.endsWith('`')) {
+        return <code key={i} className="rounded bg-muted px-1 py-0.5 font-mono text-[10px]">{part.slice(1, -1)}</code>;
+      }
+      return part;
+    });
   };
 
   return (
@@ -196,6 +216,12 @@ export function KnowledgeView() {
                     }`}>
                       {entry.kind === 'FeatureSpec' ? 'Feature' : 'App'}
                     </Badge>
+                    {entry.model && (
+                      <Badge variant="outline" className="text-[10px] border-cyan-500/30 text-cyan-400 gap-1">
+                        <Cpu className="h-2.5 w-2.5" />
+                        {entry.model}{entry.provider ? ` · ${entry.provider}` : ''}
+                      </Badge>
+                    )}
                     <span className="text-xs text-muted-foreground ml-auto">
                       {formatDate(entry.timestamp)}
                       {entry.duration_ms ? ` · ${formatDuration(entry.duration_ms)}` : ''}
@@ -205,9 +231,16 @@ export function KnowledgeView() {
 
                   {isExpanded && (
                     <div className="mt-3 ml-7 space-y-3">
-                      {entry.notes && (
-                        <p className="text-xs text-muted-foreground">{entry.notes}</p>
-                      )}
+                      {/* Build metadata summary */}
+                      <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                        {entry.notes && <span>{entry.notes}</span>}
+                        {(entry.tokens_in > 0 || entry.tokens_out > 0) && (
+                          <span className="flex items-center gap-1 shrink-0">
+                            <Coins className="h-3 w-3 text-amber-400" />
+                            {entry.tokens_in.toLocaleString()} in · {entry.tokens_out.toLocaleString()} out
+                          </span>
+                        )}
+                      </div>
 
                       {filesGenerated.length > 0 && (
                         <div>
@@ -259,10 +292,10 @@ export function KnowledgeView() {
                             }
                             // Bullet
                             if (trimmed.startsWith('- ')) {
-                              return <p key={i} className="text-xs text-muted-foreground pl-2">• {trimmed.slice(2)}</p>;
+                              return <p key={i} className="text-xs text-muted-foreground pl-2">• {renderInlineMarkdown(trimmed.slice(2))}</p>;
                             }
                             // Plain text
-                            return <p key={i} className="text-xs text-muted-foreground">{trimmed}</p>;
+                            return <p key={i} className="text-xs text-muted-foreground">{renderInlineMarkdown(trimmed)}</p>;
                           })}
                         </div>
                       )}

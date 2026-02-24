@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import {
   Play,
+  Square,
   Trash2,
   RotateCcw,
   CheckCircle2,
@@ -460,7 +461,13 @@ function ActivityTimeline({ output, error, itemStatus }: { output: string; error
 
 /* ── Main Queue View ── */
 
-export function QueueView() {
+interface QueueViewProps {
+  onToggleOutput?: () => void;
+  outputPanelOpen?: boolean;
+  queueRunning?: boolean;
+}
+
+export function QueueView({ onToggleOutput, outputPanelOpen, queueRunning }: QueueViewProps = {}) {
   const [items, setItems] = useState<QueueItem[]>([]);
   const [stats, setStats] = useState<QueueStats>({
     pending: 0, running: 0, completed: 0, failed: 0, 'needs-attention': 0, total: 0,
@@ -493,6 +500,15 @@ export function QueueView() {
       await fetchQueue();
     } catch {
       console.error('Failed to start queue');
+    }
+  };
+
+  const handleStopAll = async () => {
+    try {
+      await fetch('/api/queue/stop', { method: 'POST' });
+      await fetchQueue();
+    } catch {
+      console.error('Failed to stop queue');
     }
   };
 
@@ -529,6 +545,15 @@ export function QueueView() {
     }
   };
 
+  const handleClearAll = async () => {
+    try {
+      await fetch('/api/queue/clear', { method: 'POST' });
+      await fetchQueue();
+    } catch {
+      console.error('Failed to clear queue');
+    }
+  };
+
   const formatDuration = (ms: number | null) => {
     if (!ms) return '—';
     if (ms < 1000) return `${ms}ms`;
@@ -556,15 +581,44 @@ export function QueueView() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          {stats.completed > 0 && (
+          {/* Output panel toggle */}
+          {onToggleOutput && (isRunning || queueRunning) && (
+            <Button
+              variant={outputPanelOpen ? 'default' : 'outline'}
+              size="sm"
+              onClick={onToggleOutput}
+              className="text-xs gap-2"
+            >
+              <Terminal className="h-3.5 w-3.5" />
+              Output
+              {(isRunning || queueRunning) && (
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
+                </span>
+              )}
+            </Button>
+          )}
+          {stats.total > 0 && !isRunning && (
             <Button
               variant="outline"
               size="sm"
-              onClick={handleClearCompleted}
+              onClick={handleClearAll}
               className="text-xs"
             >
               <Trash2 className="h-3.5 w-3.5 mr-1.5" />
-              Clear Done ({stats.completed})
+              Clear All ({stats.total})
+            </Button>
+          )}
+          {isRunning && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleStopAll}
+              className="text-xs border-red-500/30 text-red-400 hover:bg-red-500/10 hover:text-red-300"
+            >
+              <Square className="h-3.5 w-3.5 mr-1.5" />
+              Stop All
             </Button>
           )}
           <Button
@@ -606,8 +660,6 @@ export function QueueView() {
           );
         })}
       </div>
-
-
 
       <Separator />
 
@@ -670,7 +722,7 @@ export function QueueView() {
                           <RotateCcw className="h-3.5 w-3.5" />
                         </Button>
                       )}
-                      {item.status !== 'running' && (
+                      {item.status === 'pending' && !isRunning && (
                         <Button variant="ghost" size="sm" onClick={() => handleRemove(item.id)} className="h-7 px-2 text-muted-foreground hover:text-red-400">
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>

@@ -17,6 +17,7 @@ export interface AppSpec {
     data?: DataConfig;
     pages?: PagesConfig;
     deployment?: DeploymentConfig;
+    dependencies?: string[];       // npm packages this app requires (e.g. ['express', 'dotenv'])
     status?: SpecStatus;
     build?: BuildMeta;
 }
@@ -101,6 +102,22 @@ export interface DeploymentConfig {
 
 export type SpecStatus = 'draft' | 'ready' | 'in-progress' | 'validation' | 'review' | 'done';
 
+/** Context about an existing app that feature builds need for integration */
+export interface AppIntegrationContext {
+    /** Parsed package.json — deps already installed */
+    packageJson?: {
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+        scripts?: Record<string, string>;
+    };
+    /** Raw tsconfig.json content */
+    tsconfigRaw?: string;
+    /** Flat list of existing file paths in the app */
+    fileTree: string[];
+    /** Stack derived from the actual app */
+    stack?: StackConfig;
+}
+
 // ─── Feature Spec ────────────────────────────────────────
 
 export interface FeatureSpec {
@@ -113,6 +130,7 @@ export interface FeatureSpec {
     };
     phase?: number;              // 1 = foundation, 2 = core, 3 = polish
     dependsOn?: string[];        // slugs of other feature specs that must complete first
+    dependencies?: string[];     // npm packages this feature requires (e.g. ['puppeteer', 'nodemailer'])
     model?: {
         collection: string;
         fields: Array<{
@@ -234,6 +252,7 @@ export interface TaskProfile {
     needsTypeCheck: boolean;
     needsLint: boolean;
     needsTest: boolean;
+    needsRuntimeTest: boolean;
     maxIterations: number;
 }
 
@@ -245,6 +264,7 @@ export interface KnowledgeFile {
 }
 
 export interface ProjectContext {
+    repoPath: string;
     bridge: BridgeConfig;
     knowledgeFiles: KnowledgeFile[];
     conventions: string[];

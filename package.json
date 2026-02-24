@@ -1,9 +1,24 @@
 {
     "name": "saveaday-factory",
     "version": "1.0.0",
-    "private": true,
     "type": "module",
-    "description": "Autonomous app scaffolding factory for the SaveADay monorepo",
+    "description": "Autonomous app scaffolding factory — generate production-ready apps from YAML specs",
+    "license": "MIT",
+    "author": "SaveADay",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/saveaday/factory.git"
+    },
+    "homepage": "https://github.com/saveaday/factory",
+    "keywords": [
+        "code-generation",
+        "scaffolding",
+        "llm",
+        "autonomous",
+        "cli",
+        "yaml",
+        "factory"
+    ],
     "bin": {
         "factory": "./engine/cli.ts"
     },

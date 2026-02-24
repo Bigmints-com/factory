@@ -20,6 +20,7 @@ export interface QueueItem {
     completedAt: string | null;
     output: string;
     error: string | null;
+    errorCategory: 'transient' | 'permanent' | null;
     durationMs: number | null;
 }
 
@@ -36,6 +37,7 @@ interface QueueRow {
     completed_at: string | null;
     output: string;
     error: string | null;
+    error_category: string | null;
     duration_ms: number | null;
 }
 
@@ -57,6 +59,7 @@ function mapRow(row: QueueRow): QueueItem {
         completedAt: row.completed_at,
         output: row.output,
         error: row.error,
+        errorCategory: row.error_category as any,
         durationMs: row.duration_ms,
     };
 }
@@ -65,7 +68,7 @@ function generateId(): string {
     return `q_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function timestamp(): string {
+export function timestamp(): string {
     return new Date().toISOString();
 }
 
@@ -178,7 +181,7 @@ export function listQueue(): QueueItem[] {
 /** Update a queue item's fields. */
 export function updateItem(
     id: string,
-    updates: Partial<Pick<QueueItem, 'status' | 'output' | 'error' | 'startedAt' | 'completedAt' | 'durationMs'>>
+    updates: Partial<Pick<QueueItem, 'status' | 'output' | 'error' | 'errorCategory' | 'startedAt' | 'completedAt' | 'durationMs'>>
 ): QueueItem | null {
     const db = getDb();
     const sets: string[] = [];
@@ -187,6 +190,7 @@ export function updateItem(
     if (updates.status !== undefined) { sets.push('status = ?'); values.push(updates.status); }
     if (updates.output !== undefined) { sets.push('output = ?'); values.push(updates.output); }
     if (updates.error !== undefined) { sets.push('error = ?'); values.push(updates.error); }
+    if (updates.errorCategory !== undefined) { sets.push('error_category = ?'); values.push(updates.errorCategory); }
     if (updates.startedAt !== undefined) { sets.push('started_at = ?'); values.push(updates.startedAt); }
     if (updates.completedAt !== undefined) { sets.push('completed_at = ?'); values.push(updates.completedAt); }
     if (updates.durationMs !== undefined) { sets.push('duration_ms = ?'); values.push(updates.durationMs); }
@@ -215,10 +219,11 @@ export function markCompleted(id: string, output: string, durationMs: number): Q
 }
 
 /** Mark an item as failed. */
-export function markFailed(id: string, error: string, output: string, durationMs: number): QueueItem | null {
+export function markFailed(id: string, error: string, output: string, durationMs: number, category?: 'transient' | 'permanent'): QueueItem | null {
     return updateItem(id, {
         status: 'failed',
         error,
+        errorCategory: category,
         output,
         completedAt: timestamp(),
         durationMs,

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 import { Sidebar } from '@/components/sidebar';
 import { AddProject } from '@/components/add-project';
@@ -26,7 +26,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { FileText, Package, CheckCircle2, AlertCircle, Activity, Puzzle, Server, Globe, Database, Layers, ListPlus, ListOrdered, X, PanelRight, Terminal, FolderOpen, Plug, Settings, Eye, Plus, Loader2 as Spinner, Sparkles, Rocket, GitBranch } from 'lucide-react';
+import { FileText, Package, CheckCircle2, AlertCircle, Activity, Puzzle, Server, Globe, Database, Layers, ListPlus, ListOrdered, X, PanelRight, Terminal, FolderOpen, Plug, Settings, Eye, Plus, Loader2 as Spinner, Sparkles, Rocket, GitBranch, Clock, CircleDot, CircleCheck, CircleX, AlertTriangle } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface Spec {
@@ -88,6 +88,24 @@ export default function Dashboard() {
   const [editingSpec, setEditingSpec] = useState<{ file: string; name: string } | null>(null);
   const [showSpecChat, setShowSpecChat] = useState(false);
   const [isBuildingAll, setIsBuildingAll] = useState(false);
+  const [queueStatusMap, setQueueStatusMap] = useState<Record<string, { status: string; id: string }>>({}); 
+  const [queueRunning, setQueueRunning] = useState(false);
+  const logOffsetRef = useRef(0);
+
+  const fetchQueueStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/queue');
+      const data = await res.json();
+      const map: Record<string, { status: string; id: string }> = {};
+      for (const item of (data.items || [])) {
+        map[item.spec_file] = { status: item.status, id: item.id };
+      }
+      setQueueStatusMap(map);
+      // Track if queue is running
+      const running = (data.items || []).some((i: any) => i.status === 'running');
+      setQueueRunning(running || data.isRunning || false);
+    } catch {}
+  }, []);
 
   const fetchSpecs = useCallback(async () => {
     try {
@@ -125,7 +143,7 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    Promise.all([fetchProjects(), fetchSpecs(), fetchReports()]).finally(() => setLoading(false));
+    Promise.all([fetchProjects(), fetchSpecs(), fetchReports(), fetchQueueStatus()]).finally(() => setLoading(false));
 
     // Handle initial tab from hash after mount
     if (typeof window !== 'undefined') {
@@ -138,13 +156,39 @@ export default function Dashboard() {
         }
       }
     }
-  }, [fetchProjects, fetchSpecs, fetchReports]);
+  }, [fetchProjects, fetchSpecs, fetchReports, fetchQueueStatus]);
 
   // Sync tab to URL hash
   useEffect(() => {
     const tab = showAddProject ? 'projects' : activeTab;
     window.location.hash = tab;
   }, [activeTab, showAddProject]);
+
+  // Live log polling when queue is running
+  useEffect(() => {
+    if (!queueRunning) {
+      logOffsetRef.current = 0;
+      return;
+    }
+    // Auto-open the output panel
+    setBuildOutput('Waiting for build output...\n');
+    logOffsetRef.current = 0;
+    setOutputPanelOpen(true);
+
+    const pollLog = async () => {
+      try {
+        const res = await fetch(`/api/queue/log?offset=${logOffsetRef.current}`);
+        const data = await res.json();
+        if (data.log) {
+          setBuildOutput(prev => prev + data.log);
+          logOffsetRef.current = data.offset;
+        }
+      } catch { /* ignore */ }
+    };
+    pollLog();
+    const interval = setInterval(pollLog, 1500);
+    return () => clearInterval(interval);
+  }, [queueRunning]);
 
   const handleValidate = async (file: string) => {
     setActiveAction({ type: 'validate', file });
@@ -311,6 +355,7 @@ export default function Dashboard() {
       if (res.ok) {
         setBuildOutput(`✓ Added "${specFile}" to build queue`);
         toast.success('Added to queue', { description: specFile });
+        fetchQueueStatus();
         // Switch to queue tab
         setActiveTab('queue');
       } else {
@@ -326,22 +371,38 @@ export default function Dashboard() {
   const handleBuildAll = async () => {
     setIsBuildingAll(true);
     let enqueued = 0;
+    let skipped = 0;
     let errors = 0;
 
     try {
-      // 1. Enqueue app specs first (phase 0)
+      // 1. Validate & enqueue app specs first (phase 0)
       for (const spec of specs) {
         try {
+          // Validate YAML first
+          const valRes = await fetch('/api/validate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ specFile: spec.file, quick: true }),
+          });
+          const valData = await valRes.json();
+
+          if (!valRes.ok || !valData.passed) {
+            skipped++;
+            toast.warning(`Skipped: ${spec.metadata?.name || spec.file}`, {
+              description: `YAML issue: ${valData.errors?.[0] || valData.checks?.find((c: any) => !c.passed)?.message || 'Validation failed'} — will auto-fix during build`,
+            });
+            continue;
+          }
+
           const res = await fetch('/api/queue', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ specFile: spec.file, kind: 'AppSpec', phase: 0, dependsOn: [] }),
+            body: JSON.stringify({ specFile: spec.file, kind: 'AppSpec', phase: 0, dependsOn: [], buildAll: true }),
           });
           if (res.ok) {
             enqueued++;
           } else {
             const data = await res.json();
-            // Skip already-queued items silently
             if (res.status !== 409) {
               errors++;
               toast.error(`Failed: ${spec.file}`, { description: data.error });
@@ -352,10 +413,26 @@ export default function Dashboard() {
         }
       }
 
-      // 2. Enqueue feature specs sorted by phase
+      // 2. Validate & enqueue feature specs sorted by phase
       const sortedFeatures = [...featureSpecs].sort((a, b) => (a.phase ?? 0) - (b.phase ?? 0));
       for (const fs of sortedFeatures) {
         try {
+          // Validate YAML first
+          const valRes = await fetch('/api/validate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ specFile: fs.file, quick: true }),
+          });
+          const valData = await valRes.json();
+
+          if (!valRes.ok || !valData.passed) {
+            skipped++;
+            toast.warning(`Skipped: ${String(fs.feature?.name || fs.file)}`, {
+              description: `YAML issue: ${valData.errors?.[0] || valData.checks?.find((c: any) => !c.passed)?.message || 'Validation failed'} — will auto-fix during build`,
+            });
+            continue;
+          }
+
           const res = await fetch('/api/queue', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -364,6 +441,7 @@ export default function Dashboard() {
               kind: 'FeatureSpec',
               phase: fs.phase ?? 0,
               dependsOn: fs.dependsOn ?? [],
+              buildAll: true,
             }),
           });
           if (res.ok) {
@@ -380,13 +458,18 @@ export default function Dashboard() {
         }
       }
 
+      const parts: string[] = [];
+      if (errors > 0) parts.push(`${errors} errors`);
+      if (skipped > 0) parts.push(`${skipped} skipped (invalid YAML)`);
+
       if (enqueued > 0) {
         toast.success(`Queued ${enqueued} spec${enqueued !== 1 ? 's' : ''}`, {
-          description: errors > 0 ? `${errors} failed` : 'Switch to Queue tab to start processing',
+          description: parts.length > 0 ? parts.join(', ') : 'Switch to Queue tab to start processing',
         });
         setActiveTab('queue');
-      } else if (errors > 0) {
-        toast.error(`Failed to queue any specs (${errors} errors)`);
+        fetchQueueStatus();
+      } else if (errors > 0 || skipped > 0) {
+        toast.error(`No specs queued`, { description: parts.join(', ') });
       } else {
         toast.info('All specs are already in the queue');
         setActiveTab('queue');
@@ -666,6 +749,22 @@ export default function Dashboard() {
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
+                    {queueStatusMap[spec.file] && (
+                      <Badge variant="outline" className={`text-[10px] shrink-0 gap-1 ${
+                        queueStatusMap[spec.file].status === 'completed' ? 'text-green-400 border-green-500/30' :
+                        queueStatusMap[spec.file].status === 'running' ? 'text-blue-400 border-blue-500/30' :
+                        queueStatusMap[spec.file].status === 'failed' ? 'text-red-400 border-red-500/30' :
+                        queueStatusMap[spec.file].status === 'needs-attention' ? 'text-amber-400 border-amber-500/30' :
+                        'text-muted-foreground border-muted'
+                      }`}>
+                        {queueStatusMap[spec.file].status === 'completed' && <CircleCheck className="h-2.5 w-2.5" />}
+                        {queueStatusMap[spec.file].status === 'running' && <Spinner className="h-2.5 w-2.5 animate-spin" />}
+                        {queueStatusMap[spec.file].status === 'pending' && <Clock className="h-2.5 w-2.5" />}
+                        {queueStatusMap[spec.file].status === 'failed' && <CircleX className="h-2.5 w-2.5" />}
+                        {queueStatusMap[spec.file].status === 'needs-attention' && <AlertTriangle className="h-2.5 w-2.5" />}
+                        {queueStatusMap[spec.file].status}
+                      </Badge>
+                    )}
                     <Button
                       variant="ghost"
                       size="icon"
@@ -693,15 +792,17 @@ export default function Dashboard() {
                     >
                       {activeAction?.type === 'build' && activeAction?.file === spec.file ? 'Building...' : 'Build'}
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7"
-                      onClick={() => handleEnqueue(spec.file, 'AppSpec')}
-                      title="Add to queue"
-                    >
-                      <ListPlus className="h-3.5 w-3.5" />
-                    </Button>
+                    {!queueStatusMap[spec.file] && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={() => handleEnqueue(spec.file, 'AppSpec')}
+                        title="Add to queue"
+                      >
+                        <ListPlus className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -749,6 +850,22 @@ export default function Dashboard() {
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
+                    {queueStatusMap[fs.file] && (
+                      <Badge variant="outline" className={`text-[10px] shrink-0 gap-1 ${
+                        queueStatusMap[fs.file].status === 'completed' ? 'text-green-400 border-green-500/30' :
+                        queueStatusMap[fs.file].status === 'running' ? 'text-blue-400 border-blue-500/30' :
+                        queueStatusMap[fs.file].status === 'failed' ? 'text-red-400 border-red-500/30' :
+                        queueStatusMap[fs.file].status === 'needs-attention' ? 'text-amber-400 border-amber-500/30' :
+                        'text-muted-foreground border-muted'
+                      }`}>
+                        {queueStatusMap[fs.file].status === 'completed' && <CircleCheck className="h-2.5 w-2.5" />}
+                        {queueStatusMap[fs.file].status === 'running' && <Spinner className="h-2.5 w-2.5 animate-spin" />}
+                        {queueStatusMap[fs.file].status === 'pending' && <Clock className="h-2.5 w-2.5" />}
+                        {queueStatusMap[fs.file].status === 'failed' && <CircleX className="h-2.5 w-2.5" />}
+                        {queueStatusMap[fs.file].status === 'needs-attention' && <AlertTriangle className="h-2.5 w-2.5" />}
+                        {queueStatusMap[fs.file].status}
+                      </Badge>
+                    )}
                     <Button
                       variant="ghost"
                       size="icon"
@@ -767,7 +884,7 @@ export default function Dashboard() {
                     >
                       {activeAction?.type === 'feature-validate' && activeAction?.file === fs.file ? 'Validating...' : 'Validate'}
                     </Button>
-                    {!isSequenced && (
+                    {!isSequenced && !queueStatusMap[fs.file] && (
                       <>
                         <Button
                           variant="ghost"
@@ -789,7 +906,7 @@ export default function Dashboard() {
                         </Button>
                       </>
                     )}
-                    {isSequenced && (
+                    {isSequenced && !queueStatusMap[fs.file] && (
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <Badge variant="outline" className="text-[10px] text-muted-foreground border-muted cursor-help">
@@ -828,7 +945,8 @@ export default function Dashboard() {
     </div>
   );
 
-  const hasOutput = !!(validationResult || buildOutput);
+  const hasOutput = !!(validationResult || buildOutput || queueRunning);
+  const showOutputButton = ((activeTab === 'specs' || activeTab === 'queue') && hasOutput && !outputPanelOpen);
 
   return (
     <div className="flex h-screen bg-background">
@@ -878,7 +996,7 @@ export default function Dashboard() {
                   {activeTab === 'settings' && 'Configure factory preferences'}
                 </p>
               </div>
-              {activeTab === 'specs' && hasOutput && !outputPanelOpen && (
+              {showOutputButton && (
                 <Button
                   variant="outline"
                   size="sm"
@@ -887,13 +1005,25 @@ export default function Dashboard() {
                 >
                   <Terminal className="h-4 w-4" />
                   Output
+                  {queueRunning && (
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
+                    </span>
+                  )}
                 </Button>
               )}
             </div>
           )}
 
           {activeTab === 'dashboard' && renderDashboard()}
-          {activeTab === 'queue' && <QueueView />}
+          {activeTab === 'queue' && (
+            <QueueView
+              onToggleOutput={() => setOutputPanelOpen(!outputPanelOpen)}
+              outputPanelOpen={outputPanelOpen}
+              queueRunning={queueRunning}
+            />
+          )}
           {activeTab === 'specs' && renderSpecs()}
           {activeTab === 'reports' && renderReports()}
           {activeTab === 'knowledge' && <KnowledgeView />}
@@ -925,7 +1055,7 @@ export default function Dashboard() {
             <div className="flex items-center gap-2">
               <Terminal className="h-4 w-4 text-muted-foreground" />
               <span className="text-sm font-medium">Output</span>
-              {activeAction && (
+              {(activeAction || queueRunning) && (
                 <span className="relative flex h-2 w-2">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
@@ -989,7 +1119,7 @@ export default function Dashboard() {
             {buildOutput && (
               <BuildLog
                 output={buildOutput}
-                isRunning={!!activeAction}
+                isRunning={!!activeAction || queueRunning}
               />
             )}
           </div>

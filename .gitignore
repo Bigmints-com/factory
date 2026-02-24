@@ -8,3 +8,4 @@ reference/
 *.db
 package-lock.json
 settings.json
+projects.json

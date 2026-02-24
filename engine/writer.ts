@@ -50,6 +50,15 @@ export function setupProject(targetDir: string, packageManager?: string): boolea
         default: cmd = 'npm install --legacy-peer-deps'; break;
     }
 
+    // Bump package versions to latest before install (LLM pins stale versions)
+    try {
+        log('●', 'Bumping package versions to latest...');
+        execSync('npx -y npm-check-updates -u', { cwd: targetDir, stdio: 'pipe', timeout: 30_000 });
+        log('✓', 'Package versions bumped to latest');
+    } catch {
+        log('!', 'Version bump skipped (non-fatal)');
+    }
+
     try {
         log('●', `Running ${cmd} in ${targetDir}...`);
         execSync(cmd, { cwd: targetDir, stdio: 'pipe', timeout: 120_000 });
@@ -70,12 +79,12 @@ export function gitCommit(repoPath: string, message: string): boolean {
         // Init git repo if not present
         if (!existsSync(join(repoPath, '.git'))) {
             log('●', 'Initializing git repo');
-            execSync('git init', { cwd: repoPath, stdio: 'pipe' });
+            execSync('git init', { cwd: repoPath, stdio: 'pipe', maxBuffer: 50 * 1024 * 1024 });
             log('✓', 'Git repo initialized');
         }
 
-        execSync('git add -A', { cwd: repoPath, stdio: 'pipe' });
-        execSync(`git commit -m "${message}"`, { cwd: repoPath, stdio: 'pipe' });
+        execSync('git add -A', { cwd: repoPath, stdio: 'pipe', maxBuffer: 50 * 1024 * 1024 });
+        execSync(`git commit -m "${message}"`, { cwd: repoPath, stdio: 'pipe', maxBuffer: 50 * 1024 * 1024 });
         log('✓', `Committed: ${message}`);
         return true;
     } catch (error) {
@@ -97,17 +106,29 @@ export function gitPush(repoPath: string, branch?: string): boolean {
     try {
         if (!existsSync(join(repoPath, '.git'))) {
             log('!', 'Not a git repo — skipping push');
-            return false;
+            return true; // Not an error
+        }
+
+        // Check if a remote is configured
+        try {
+            const remotes = execSync('git remote', { cwd: repoPath, stdio: 'pipe', maxBuffer: 10 * 1024 * 1024 }).toString().trim();
+            if (!remotes) {
+                log('!', 'No git remote configured — skipping push');
+                return true; // Not an error
+            }
+        } catch {
+            log('!', 'No git remote configured — skipping push');
+            return true;
         }
 
         const cmd = branch ? `git push origin ${branch}` : 'git push';
-        execSync(cmd, { cwd: repoPath, stdio: 'pipe' });
+        execSync(cmd, { cwd: repoPath, stdio: 'pipe', maxBuffer: 50 * 1024 * 1024 });
         log('✓', 'Pushed to remote');
         return true;
     } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
-        logError(`Git push failed: ${msg}`);
-        return false;
+        log('!', `Git push skipped: ${msg.slice(0, 100)}`);
+        return true; // Push failure should not fail the build
     }
 }
 
@@ -125,71 +146,85 @@ export function buildDebrief(
     specFile: string,
     durationMs?: number,
 ): string {
-    const outcome = result.success
-        ? `Successfully generated ${result.files.length} file(s) in ${result.iterations} iteration(s)`
-        : result.errors?.length
-            ? `Completed with ${result.errors.length} issue(s) after ${result.iterations} iteration(s)`
-            : 'Build failed';
+    const lines: string[] = [];
+    lines.push(appName);
+    lines.push('');
 
-    // Group files by top-level directory
-    const dirCounts = new Map<string, number>();
-    for (const f of result.files) {
-        const parts = f.filename.split('/');
-        const dir = parts.length > 1 ? parts.slice(0, -1).join('/') : '.';
-        dirCounts.set(dir, (dirCounts.get(dir) || 0) + 1);
+    // Architecture summary (from LLM plan)
+    if (result.plan?.architecture) {
+        lines.push(result.plan.architecture);
+        lines.push('');
     }
-    const dirTable = Array.from(dirCounts.entries())
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([dir, count]) => `| ${dir} | ${count} |`)
-        .join('\n');
 
-    const stackLine = [
-        stack.framework,
-        stack.packageManager ? `(${stack.packageManager})` : '',
-        stack.language || 'TypeScript',
-    ].filter(Boolean).join(' · ');
+    // Extract meaningful exports from each source file
+    for (const f of result.files) {
+        if (!f.filename.match(/\.(ts|tsx|js|jsx)$/) || f.filename === 'package.json') continue;
 
-    const durationLine = durationMs
-        ? `Built in ${(durationMs / 1000).toFixed(1)}s with ${result.iterations} iteration(s).`
-        : `${result.iterations} iteration(s).`;
+        const exports = extractExports(f.content);
+        if (exports.length === 0) continue;
 
-    const issuesSection = result.errors?.length
-        ? result.errors.map(e => `- ${e}`).join('\n')
-        : 'No issues — passed on first attempt.';
+        lines.push(`- ${f.filename}: ${exports.join(', ')}`);
+    }
 
-    return `# Build Debrief: ${appName}
+    // Dependencies (from package.json)
+    const pkg = result.files.find(f => f.filename === 'package.json');
+    if (pkg) {
+        try {
+            const parsed = JSON.parse(pkg.content);
+            const deps = Object.keys(parsed.dependencies || {});
+            if (deps.length > 0) {
+                lines.push('');
+                lines.push(`Dependencies: ${deps.join(', ')}`);
+            }
+        } catch { /* skip */ }
+    }
 
-> ${outcome}
+    // Key decisions
+    if (result.plan?.decisions?.length) {
+        lines.push('');
+        for (const d of result.plan.decisions) {
+            lines.push(`- ${d}`);
+        }
+    }
 
-## What Was Built
-- **Spec**: \`${specFile}\`
-- **Type**: ${result.files.length > 20 ? 'Full App' : 'Feature / Partial'}
-- **Stack**: ${stackLine}
+    // Issues worth knowing about
+    if (result.errors?.length) {
+        lines.push('');
+        lines.push('Known issues:');
+        for (const e of result.errors) {
+            lines.push(`- ${e}`);
+        }
+    }
 
-## Architecture
+    return lines.join('\n') + '\n';
+}
 
-${result.plan?.architecture || 'No architecture plan recorded.'}
+/** Extract exported class names, function names, and interface names from TypeScript/JS source */
+function extractExports(content: string): string[] {
+    const items: string[] = [];
+    const lines = content.split('\n');
 
-## Key Decisions
+    for (const line of lines) {
+        const trimmed = line.trim();
 
-${result.plan?.decisions?.map(d => `- ${d}`).join('\n') || 'No decisions recorded.'}
+        // export class Foo / export default class Foo
+        const classMatch = trimmed.match(/^export\s+(?:default\s+)?class\s+(\w+)/);
+        if (classMatch) { items.push(classMatch[1]); continue; }
 
-## Files Generated
+        // export function foo / export async function foo / export default function foo
+        const fnMatch = trimmed.match(/^export\s+(?:default\s+)?(?:async\s+)?function\s+(\w+)/);
+        if (fnMatch) { items.push(`${fnMatch[1]}()`); continue; }
 
-${result.files.length} files across ${dirCounts.size} director${dirCounts.size === 1 ? 'y' : 'ies'}
+        // export interface Foo / export type Foo
+        const typeMatch = trimmed.match(/^export\s+(?:interface|type)\s+(\w+)/);
+        if (typeMatch) { items.push(typeMatch[1]); continue; }
 
-| Directory | Files |
-|---|---|
-${dirTable}
+        // export const foo = ... (named exports)
+        const constMatch = trimmed.match(/^export\s+const\s+(\w+)/);
+        if (constMatch) { items.push(constMatch[1]); continue; }
+    }
 
-## Issues & Resolutions
-
-${issuesSection}
-
-## Duration
-
-${durationLine}
-`;
+    return items;
 }
 
 /**

@@ -8,10 +8,6 @@ import {
   Save,
   Loader2,
   Sparkles,
-  ShoppingCart,
-  BookOpen,
-  CheckSquare,
-  Calendar,
   Copy,
   Check,
   X,
@@ -21,6 +17,11 @@ import {
   Package,
   Layers,
   SaveAll,
+  ScanSearch,
+  FolderTree,
+  Blocks,
+  FileCode,
+  AlertTriangle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -57,32 +58,6 @@ interface SpecChatProps {
   onSpecSaved: () => void;
 }
 
-const QUICK_PROMPTS = [
-  {
-    icon: ShoppingCart,
-    text: 'E-commerce Store',
-    prompt:
-      'Build an e-commerce store with products, categories, orders, customer reviews, and a shopping cart.',
-  },
-  {
-    icon: BookOpen,
-    text: 'Blog Platform',
-    prompt:
-      'Build a blog platform with posts, categories, comments, author profiles, and an RSS feed.',
-  },
-  {
-    icon: CheckSquare,
-    text: 'Task Manager',
-    prompt:
-      'Build a task management app with projects, tasks, subtasks, team members, and deadline tracking.',
-  },
-  {
-    icon: Calendar,
-    text: 'Booking System',
-    prompt:
-      'Build a booking and appointment system with services, availability slots, bookings, and email notifications.',
-  },
-];
 
 // ─── Multi-spec parser ─────────────────────────────────────
 
@@ -162,15 +137,20 @@ export function SpecChat({ open, onOpenChange, onSpecSaved }: SpecChatProps) {
   const [isExistingApp, setIsExistingApp] = useState(false);
   const [existingAppName, setExistingAppName] = useState('');
 
-  // Check for existing app specs on dialog open
+  // Repo scan context
+  const [repoContext, setRepoContext] = useState<any>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState('');
+
+  // Check for existing app specs and run repo scan on dialog open
   useEffect(() => {
     if (open) {
+      // Check existing specs
       fetch('/api/specs')
         .then((r) => r.json())
         .then((data) => {
           if (data.specs && data.specs.length > 0) {
             setIsExistingApp(true);
-            // Use the first app spec's name
             const firstApp = data.specs[0];
             const name = firstApp.metadata?.name || firstApp.metadata?.slug || firstApp.file?.replace('.yaml', '') || 'app';
             setExistingAppName(name);
@@ -183,6 +163,21 @@ export function SpecChat({ open, onOpenChange, onSpecSaved }: SpecChatProps) {
           setIsExistingApp(false);
           setExistingAppName('');
         });
+
+      // Run repo scan
+      setScanning(true);
+      setScanError('');
+      fetch('/api/repo-scan')
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.error) {
+            setScanError(data.error);
+          } else {
+            setRepoContext(data);
+          }
+        })
+        .catch((err) => setScanError(err.message || 'Scan failed'))
+        .finally(() => setScanning(false));
     }
   }, [open]);
 
@@ -232,6 +227,7 @@ export function SpecChat({ open, onOpenChange, onSpecSaved }: SpecChatProps) {
           messages: newMessages.map((m) => ({ role: m.role, content: m.content })),
           isExistingApp,
           existingAppName,
+          repoContext,
         }),
       });
 
@@ -489,6 +485,28 @@ export function SpecChat({ open, onOpenChange, onSpecSaved }: SpecChatProps) {
               </div>
             )}
 
+            {/* Repo scan status */}
+            {isEmpty && (
+              <div className="mx-6 mt-3 px-3 py-2 rounded-xl border text-xs font-medium flex items-center gap-2" style={{ borderColor: scanning ? 'rgba(59, 130, 246, 0.2)' : repoContext ? 'rgba(16, 185, 129, 0.2)' : scanError ? 'rgba(239, 68, 68, 0.2)' : 'transparent', background: scanning ? 'rgba(59, 130, 246, 0.05)' : repoContext ? 'rgba(16, 185, 129, 0.05)' : scanError ? 'rgba(239, 68, 68, 0.05)' : 'transparent' }}>
+                {scanning ? (
+                  <><ScanSearch className="h-3.5 w-3.5 text-blue-500 animate-pulse" /> <span className="text-blue-600 dark:text-blue-400">Scanning repo...</span></>
+                ) : repoContext ? (
+                  <><ScanSearch className="h-3.5 w-3.5 text-emerald-500" />
+                    <span className="text-emerald-600 dark:text-emerald-400">
+                      Repo scanned: {repoContext.stack?.framework} · {Object.keys(repoContext.dependencies || {}).length} deps · {repoContext.fileTree?.length || 0} files
+                      {repoContext.existingSpecs?.features?.length > 0 && ` · ${repoContext.existingSpecs.features.length} existing features`}
+                      {repoContext.agentInstructions ? ' · ✓ agents.md' : ''}
+                    </span>
+                    {!repoContext.agentInstructions && (
+                      <span className="text-amber-500 ml-1">⚠️ no agents.md</span>
+                    )}
+                  </>
+                ) : scanError ? (
+                  <><ScanSearch className="h-3.5 w-3.5 text-red-500" /> <span className="text-red-600 dark:text-red-400">Scan failed: {scanError}</span></>
+                ) : null}
+              </div>
+            )}
+
             {/* Messages Scroll Area */}
             <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-8 space-y-8 scrollbar-thin scrollbar-thumb-muted-foreground/10 hover:scrollbar-thumb-muted-foreground/20">
               {isEmpty ? (
@@ -497,32 +515,98 @@ export function SpecChat({ open, onOpenChange, onSpecSaved }: SpecChatProps) {
                     <Bot className="h-10 w-10 text-primary-foreground" />
                   </div>
                   <div className="space-y-2">
-                    <h3 className="text-lg font-bold tracking-tight">What shall we build today?</h3>
+                    <h3 className="text-lg font-bold tracking-tight">
+                      {repoContext ? 'Project Context Loaded' : scanning ? 'Scanning Project...' : 'What shall we build today?'}
+                    </h3>
                     <p className="text-sm text-muted-foreground leading-relaxed max-w-[280px]">
-                      Describe your app and I&#39;ll break it down into modular, buildable specs.
+                      {repoContext
+                        ? 'Describe the feature or app you want and I\'ll generate specs aligned with your codebase.'
+                        : 'Describe your app and I\'ll break it down into modular, buildable specs.'}
                     </p>
                   </div>
-                  <div className="grid grid-cols-1 gap-2.5 w-full pt-4">
-                    {QUICK_PROMPTS.map((prompt) => {
-                      const IconComp = prompt.icon;
-                      return (
-                        <Button
-                          key={prompt.text}
-                          variant="outline"
-                          className="group flex items-center justify-start gap-3 rounded-2xl px-4 py-6 text-sm h-auto border-dashed hover:border-primary/50 hover:bg-primary/5 transition-all text-left overflow-hidden relative"
-                          onClick={() => handleSend(prompt.prompt)}
-                        >
-                          <div className="shrink-0 p-2 rounded-lg bg-muted group-hover:bg-primary/10 transition-colors">
-                            <IconComp className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
-                          </div>
-                          <span className="font-semibold text-card-foreground">{prompt.text}</span>
-                          <div className="absolute right-[-10px] top-[-10px] opacity-0 group-hover:opacity-10 transition-opacity">
-                            <Zap className="h-16 w-16 text-primary" />
-                          </div>
-                        </Button>
-                      );
-                    })}
-                  </div>
+
+                  {/* Scan Summary — replaces old template buttons */}
+                  {repoContext && (
+                    <div className="w-full pt-4 space-y-2">
+                      {/* agents.md */}
+                      <div className={cn(
+                        "flex items-center gap-3 rounded-xl px-4 py-3 text-sm border",
+                        repoContext.agentInstructions
+                          ? "border-emerald-500/20 bg-emerald-500/5"
+                          : "border-amber-500/20 bg-amber-500/5"
+                      )}>
+                        <FileCode className={cn("h-4 w-4 shrink-0", repoContext.agentInstructions ? "text-emerald-500" : "text-amber-500")} />
+                        <span className="font-medium">
+                          {repoContext.agentInstructions
+                            ? '✓ agents.md loaded'
+                            : '⚠️ No agents.md found'}
+                        </span>
+                      </div>
+
+                      {/* Stack */}
+                      {repoContext.stack && (
+                        <div className="flex items-center gap-3 rounded-xl px-4 py-3 text-sm border border-border/50 bg-muted/30">
+                          <Blocks className="h-4 w-4 shrink-0 text-blue-500" />
+                          <span className="text-muted-foreground">
+                            <strong className="text-foreground">{repoContext.stack.framework}</strong>
+                            {repoContext.stack.language && ` · ${repoContext.stack.language}`}
+                            {repoContext.stack.database && ` · ${repoContext.stack.database}`}
+                            {repoContext.stack.packageManager && ` · ${repoContext.stack.packageManager}`}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Deps + files */}
+                      <div className="flex items-center gap-3 rounded-xl px-4 py-3 text-sm border border-border/50 bg-muted/30">
+                        <Package className="h-4 w-4 shrink-0 text-purple-500" />
+                        <span className="text-muted-foreground">
+                          <strong className="text-foreground">{Object.keys(repoContext.dependencies || {}).length}</strong> deps
+                          {Object.keys(repoContext.devDependencies || {}).length > 0 && (
+                            <> · <strong className="text-foreground">{Object.keys(repoContext.devDependencies || {}).length}</strong> dev deps</>
+                          )}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-3 rounded-xl px-4 py-3 text-sm border border-border/50 bg-muted/30">
+                        <FolderTree className="h-4 w-4 shrink-0 text-cyan-500" />
+                        <span className="text-muted-foreground">
+                          <strong className="text-foreground">{repoContext.fileTree?.length || 0}</strong> files scanned
+                        </span>
+                      </div>
+
+                      {/* Existing specs */}
+                      {(repoContext.existingSpecs?.apps?.length > 0 || repoContext.existingSpecs?.features?.length > 0) && (
+                        <div className="flex items-center gap-3 rounded-xl px-4 py-3 text-sm border border-border/50 bg-muted/30">
+                          <Layers className="h-4 w-4 shrink-0 text-orange-500" />
+                          <span className="text-muted-foreground">
+                            {repoContext.existingSpecs.apps?.length > 0 && (
+                              <><strong className="text-foreground">{repoContext.existingSpecs.apps.length}</strong> app spec{repoContext.existingSpecs.apps.length > 1 ? 's' : ''}</>
+                            )}
+                            {repoContext.existingSpecs.apps?.length > 0 && repoContext.existingSpecs.features?.length > 0 && ' · '}
+                            {repoContext.existingSpecs.features?.length > 0 && (
+                              <><strong className="text-foreground">{repoContext.existingSpecs.features.length}</strong> feature spec{repoContext.existingSpecs.features.length > 1 ? 's' : ''}</>
+                            )}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Conventions + Knowledge */}
+                      {(repoContext.conventions?.length > 0 || repoContext.knowledgeFiles?.length > 0) && (
+                        <div className="flex items-center gap-3 rounded-xl px-4 py-3 text-sm border border-border/50 bg-muted/30">
+                          <FileText className="h-4 w-4 shrink-0 text-teal-500" />
+                          <span className="text-muted-foreground">
+                            {repoContext.conventions?.length > 0 && (
+                              <><strong className="text-foreground">{repoContext.conventions.length}</strong> convention{repoContext.conventions.length > 1 ? 's' : ''}</>
+                            )}
+                            {repoContext.conventions?.length > 0 && repoContext.knowledgeFiles?.length > 0 && ' · '}
+                            {repoContext.knowledgeFiles?.length > 0 && (
+                              <><strong className="text-foreground">{repoContext.knowledgeFiles.length}</strong> knowledge file{repoContext.knowledgeFiles.length > 1 ? 's' : ''}</>
+                            )}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-8">

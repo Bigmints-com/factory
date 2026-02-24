@@ -8,8 +8,9 @@ saveaday-factory/
 │   ├── cli.ts             ← CLI entry point & command dispatcher
 │   ├── config.ts          ← projects.json, settings.json, factory.yaml loading
 │   ├── spec.ts            ← Load, validate, update status of YAML specs
-│   ├── context.ts         ← Gather knowledge & conventions from repos
-│   ├── generate.ts        ← LLM pipeline: plan → build → test → iterate
+│   ├── context.ts         ← Gather knowledge, conventions & app integration context
+│   ├── generate.ts        ← LLM pipeline: plan → build → test → iterate (targeted)
+│   ├── task-classifier.ts ← Classifies tasks, determines validation gates
 │   ├── writer.ts          ← File writer, npm install, git ops, knowledge feedback
 │   ├── db.ts              ← SQLite database (queue, builds history)
 │   ├── queue.ts           ← Queue manager for autonomous batch builds
@@ -28,18 +29,19 @@ saveaday-factory/
 
 ## Engine Modules
 
-| Module        | Responsibility                                                                  |
-| ------------- | ------------------------------------------------------------------------------- |
-| `cli.ts`      | Parses CLI args, dispatches to handlers (build, validate, queue, project, sync) |
-| `config.ts`   | Reads/writes `projects.json`, `settings.json`, `.factory/factory.yaml`          |
-| `spec.ts`     | Loads YAML specs, validates schemas, updates spec `status` field in-place       |
-| `context.ts`  | Gathers knowledge files, conventions, and build history from the target repo    |
-| `generate.ts` | Orchestrates LLM calls: plan → build → test → iterate. Real toolchain testing   |
-| `writer.ts`   | Writes files, runs `npm install`, git commit/push, knowledge entries, AGENTS.md |
-| `db.ts`       | SQLite via `better-sqlite3`: queue_items, builds, queue_state tables            |
-| `queue.ts`    | Dependency-aware queue: enqueue, dequeue (phase + dependsOn gating), stats      |
-| `types.ts`    | AppSpec, FeatureSpec (incl. `phase`, `dependsOn`), BridgeConfig, BuildResult    |
-| `log.ts`      | Coloured step/error/success logging                                             |
+| Module               | Responsibility                                                                             |
+| -------------------- | ------------------------------------------------------------------------------------------ |
+| `cli.ts`             | Parses CLI args, dispatches to handlers (build, validate, queue, project, sync)            |
+| `config.ts`          | Reads/writes `projects.json`, `settings.json`, `.factory/factory.yaml`                     |
+| `spec.ts`            | Loads YAML specs, validates schemas, updates spec `status` field in-place                  |
+| `context.ts`         | Gathers knowledge files, conventions, app integration context from the target repo         |
+| `generate.ts`        | Orchestrates LLM calls: plan → build → test → iterate. Targeted fixes, modular generation  |
+| `task-classifier.ts` | Classifies tasks into profiles (config/scaffold/frontend/full-app), gates validation steps |
+| `writer.ts`          | Writes files, runs `npm install`, git commit/push, knowledge entries, AGENTS.md            |
+| `db.ts`              | SQLite via `better-sqlite3`: queue_items, builds, queue_state tables                       |
+| `queue.ts`           | Dependency-aware queue: enqueue, dequeue (phase + dependsOn gating), stats                 |
+| `types.ts`           | AppSpec, FeatureSpec, TaskProfile, AppIntegrationContext, BuildResult                      |
+| `log.ts`             | Coloured step/error/success logging                                                        |
 
 ## Build Pipeline
 
@@ -55,8 +57,33 @@ The engine writes generated code to a temp directory and runs actual commands ba
 - `tsc --noEmit` (if TypeScript)
 - Linter: eslint, biome, oxlint, prettier
 - Test runner: vitest, jest, playwright, cypress
+- **Runtime smoke test**: spawns `npm run dev`, waits for port, checks HTTP 200
 
-Errors feed back to LLM for up to 3 correction attempts.
+The `task-classifier.ts` determines which validation gates apply per task type:
+
+| Task Type  | Install | tsc | Lint | Tests | Runtime | Max Iterations |
+| ---------- | ------- | --- | ---- | ----- | ------- | -------------- |
+| `config`   | ✗       | ✗   | ✗    | ✗     | ✗       | 0              |
+| `scaffold` | ✓       | ✗   | ✗    | ✗     | ✗       | 2              |
+| `frontend` | ✓       | ✓   | ✓    | ✓     | ✓       | 4              |
+| `full-app` | ✓       | ✓   | ✓    | ✓     | ✓       | 5              |
+
+### Targeted Iteration
+
+When errors are found, the engine uses **targeted iteration** instead of regenerating all files:
+
+1. Parses tsc/lint error output to extract broken filenames
+2. Identifies related files (importers of broken files)
+3. Sends ONLY broken + related files to LLM for fixing
+4. Merges fixes back into the full file set — untouched files are preserved
+
+### Module-by-Module Generation
+
+For apps >15 planned files, `executeBuild` decomposes the plan into ordered modules (`config → utils → db → api → components → pages`) and generates each in a separate LLM call. Each module's prompt includes exports from previously generated modules.
+
+### Integration-Aware Feature Builds
+
+Feature builds call `gatherAppContext()` on the target app to read its package.json, tsconfig.json, file tree, and derive its stack. This context is injected into both the generation and iteration prompts so the LLM generates complementary code.
 
 ### Post-Build
 

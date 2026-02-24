@@ -57,6 +57,11 @@ stack:
   linter: eslint
   testing: vitest
 
+dependencies:
+  - express
+  - dotenv
+  - cors
+
 data:
   tables:
     - name: table_name
@@ -119,6 +124,14 @@ RULES:
 - Set deployment port between 3050-3099.
 - IMPORTANT: Use \`dependsOn\` to list the slugs of other feature specs that MUST be built BEFORE this one. If a feature has no dependencies, use an empty array \`[]\`. The engine enforces this ordering — a spec will NOT build until all its dependencies are completed.
 - Example: A "dashboard" feature (phase 2) that needs auth and data-models would have: \`dependsOn: [auth-system, data-models]\`
+- CRITICAL — PACKAGE DECLARATIONS: Every app spec and feature spec MUST include a \`dependencies\` array listing ALL npm packages that the generated code will need. Think carefully about what imports the code will use. For example:
+  - If the feature uses a database ORM, include \`drizzle-orm\`, \`better-sqlite3\`, etc.
+  - If it sends emails, include \`nodemailer\`, \`@types/nodemailer\`
+  - If it uses web scraping, include \`puppeteer\`
+  - If it uses environment variables, include \`dotenv\`
+  - If it generates unique IDs, include \`uuid\` or \`@paralleldrive/cuid2\`
+  - Always include \`@types/\` packages for any untyped dependencies
+  - Do NOT include version numbers — just the package name. The engine resolves versions automatically.
 
 Be thorough, creative, and production-ready.`;
 
@@ -175,8 +188,136 @@ RULES:
 - After all spec blocks, write a brief summary explaining the decomposition rationale and phase strategy.
 - IMPORTANT: Use \`dependsOn\` to list the slugs of other feature specs that MUST be built BEFORE this one. If a feature has no dependencies, use an empty array \`[]\`. The engine enforces this ordering — a spec will NOT build until all its dependencies are completed.
 - Example: A "dashboard" feature (phase 2) that needs auth would have: \`dependsOn: [auth-system]\`
+- CRITICAL — PACKAGE DECLARATIONS: Every feature spec MUST include a \`dependencies\` array listing ALL npm packages that the generated code will need. Think carefully about what imports the code will use:
+  - If the feature sends emails, include \`nodemailer\`, \`@types/nodemailer\`
+  - If it uses web scraping, include \`puppeteer\`
+  - If it uses environment variables, include \`dotenv\`
+  - If it needs unique IDs, include \`uuid\` or \`@paralleldrive/cuid2\`
+  - Always include \`@types/\` packages for any untyped dependencies
+  - Do NOT include version numbers — just the package name. The engine resolves versions automatically.
 
 Be thorough, creative, and production-ready.`;
+
+/**
+ * Format repo scan results into a structured context block for the system prompt.
+ */
+function formatRepoContext(ctx: any): string {
+  const lines: string[] = ['\n\nREPO CONTEXT (from scanning the actual project codebase):'];
+
+  // Agent instructions (mandatory — project architecture and conventions)
+  if (ctx.agentInstructions) {
+    lines.push(`\n=== PROJECT INSTRUCTIONS (from agents.md) ===`);
+    lines.push(ctx.agentInstructions);
+    lines.push(`=== END PROJECT INSTRUCTIONS ===`);
+  } else {
+    lines.push(`\n⚠️ WARNING: No agents.md found in the project. Generated specs may not align with project conventions.`);
+  }
+
+  // Stack
+  if (ctx.stack) {
+    lines.push(`\nDetected Stack:`);
+    lines.push(`- Framework: ${ctx.stack.framework}`);
+    lines.push(`- Package Manager: ${ctx.stack.packageManager}`);
+    lines.push(`- Language: ${ctx.stack.language}`);
+    if (ctx.stack.linter) lines.push(`- Linter: ${ctx.stack.linter}`);
+    if (ctx.stack.testing) lines.push(`- Testing: ${ctx.stack.testing}`);
+    if (ctx.stack.database) lines.push(`- Database: ${ctx.stack.database}`);
+    if (ctx.stack.cloud) lines.push(`- Cloud: ${ctx.stack.cloud}`);
+  }
+
+  // Dependencies
+  if (ctx.dependencies && Object.keys(ctx.dependencies).length > 0) {
+    const deps = Object.entries(ctx.dependencies)
+      .map(([name, ver]) => `${name}@${ver}`)
+      .join(', ');
+    lines.push(`\nInstalled Dependencies (${Object.keys(ctx.dependencies).length}):\n${deps}`);
+  }
+
+  if (ctx.devDependencies && Object.keys(ctx.devDependencies).length > 0) {
+    const devDeps = Object.entries(ctx.devDependencies)
+      .map(([name, ver]) => `${name}@${ver}`)
+      .join(', ');
+    lines.push(`\nDev Dependencies (${Object.keys(ctx.devDependencies).length}):\n${devDeps}`);
+  }
+
+  // Scripts
+  if (ctx.scripts && Object.keys(ctx.scripts).length > 0) {
+    const scriptList = Object.entries(ctx.scripts)
+      .map(([name, cmd]) => `  ${name}: ${cmd}`)
+      .join('\n');
+    lines.push(`\nNPM Scripts:\n${scriptList}`);
+  }
+
+  // TSConfig highlights
+  if (ctx.tsconfig?.compilerOptions) {
+    const opts = ctx.tsconfig.compilerOptions;
+    const highlights: string[] = [];
+    if (opts.target) highlights.push(`target: ${opts.target}`);
+    if (opts.module) highlights.push(`module: ${opts.module}`);
+    if (opts.jsx) highlights.push(`jsx: ${opts.jsx}`);
+    if (opts.paths) highlights.push(`paths: ${JSON.stringify(opts.paths)}`);
+    if (highlights.length > 0) {
+      lines.push(`\nTSConfig: ${highlights.join(', ')}`);
+    }
+  }
+
+  // File tree (truncated)
+  if (ctx.fileTree && ctx.fileTree.length > 0) {
+    const displayTree = ctx.fileTree.slice(0, 100);
+    lines.push(`\nExisting Files (${ctx.fileTree.length} total, showing first ${displayTree.length}):`);
+    lines.push(displayTree.join('\n'));
+  }
+
+  // Existing specs — full YAML content so the LLM sees exactly what's defined
+  if (ctx.existingSpecs) {
+    if (ctx.existingSpecs.apps?.length > 0) {
+      lines.push(`\n=== EXISTING APP SPECS (${ctx.existingSpecs.apps.length}) ===`);
+      for (const spec of ctx.existingSpecs.apps) {
+        lines.push(`\n--- ${spec.name} ---`);
+        if (spec.yaml) lines.push(spec.yaml);
+      }
+      lines.push(`=== END EXISTING APP SPECS ===`);
+    }
+    if (ctx.existingSpecs.features?.length > 0) {
+      lines.push(`\n=== EXISTING FEATURE SPECS (${ctx.existingSpecs.features.length}) ===`);
+      for (const spec of ctx.existingSpecs.features) {
+        lines.push(`\n--- ${spec.name} ---`);
+        if (spec.yaml) lines.push(spec.yaml);
+      }
+      lines.push(`=== END EXISTING FEATURE SPECS ===`);
+    }
+  }
+
+  // Conventions and knowledge
+  if (ctx.conventions?.length > 0) {
+    lines.push(`\n=== PROJECT CONVENTIONS ===`);
+    for (const conv of ctx.conventions) {
+      lines.push(conv);
+    }
+    lines.push(`=== END CONVENTIONS ===`);
+  }
+
+  if (ctx.knowledgeFiles?.length > 0) {
+    lines.push(`\n=== BUILD KNOWLEDGE (from previous builds) ===`);
+    for (const kf of ctx.knowledgeFiles) {
+      lines.push(kf);
+    }
+    lines.push(`=== END BUILD KNOWLEDGE ===`);
+  }
+
+  lines.push(`\nIMPORTANT CONSTRAINTS based on repo scan:
+- Do NOT include packages already listed in dependencies or devDependencies above — they are already installed.
+- Use the SAME framework, package manager, and language as detected above.
+- Align new file paths with the EXISTING file structure shown above.
+- Do NOT duplicate functionality covered by existing feature specs listed above.
+- If agents.md specifies conventions (naming, structure, shared packages), follow them strictly.
+- If the database is not Firestore, do not mention Firestore-specific IDs.
+- Tailor module paths (src/path/to/module.ts) to match the existing project's directory conventions.
+- YAML QUOTING: Always quote @-scoped package names in dependency lists (e.g. \`- "@types/node"\` not \`- @types/node\`). The @ character is reserved in YAML.`);
+
+  return lines.join('\n');
+
+}
 
 function getSettings() {
   const file = resolve(FACTORY_ROOT, 'settings.json');
@@ -190,7 +331,7 @@ function getSettings() {
 
 export async function POST(request: Request) {
   try {
-    const { messages, isExistingApp, existingAppName } = await request.json();
+    const { messages, isExistingApp, existingAppName, repoContext } = await request.json();
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return new Response(JSON.stringify({ error: 'messages required' }), {
@@ -219,24 +360,24 @@ export async function POST(request: Request) {
 
     const model = settings.buildModel || provider.defaultModel;
 
-    // Get active project's stack info
-    let stackInfo = '';
-    const bridge = getActiveBridgeConfig();
-    if (bridge?.stack) {
-      stackInfo = `\n\nThe target project uses the following stack:
-- Framework: ${bridge.stack.framework}
-- Database: ${bridge.stack.database || 'Not specified'}
-- Cloud: ${bridge.stack.cloud || 'Not specified'}
-
-Tailor your YAML and explanations accordingly. If the database is not Firestore, do not mention Firestore specific IDs.`;
+    // Build repo context block from scan results or fall back to bridge config
+    let repoContextBlock = '';
+    if (repoContext && typeof repoContext === 'object') {
+      repoContextBlock = formatRepoContext(repoContext);
+    } else {
+      // Fallback: basic stack info from factory.yaml
+      const bridge = getActiveBridgeConfig();
+      if (bridge?.stack) {
+        repoContextBlock = `\n\nThe target project uses the following stack:\n- Framework: ${bridge.stack.framework}\n- Database: ${bridge.stack.database || 'Not specified'}\n- Cloud: ${bridge.stack.cloud || 'Not specified'}\n\nTailor your YAML and explanations accordingly. If the database is not Firestore, do not mention Firestore specific IDs.`;
+      }
     }
 
     // Choose the right system prompt based on whether this is a new or existing app
     let systemPrompt: string;
     if (isExistingApp && existingAppName) {
-      systemPrompt = SYSTEM_PROMPT_EXISTING_APP.replace(/EXISTING_APP_NAME/g, existingAppName) + stackInfo;
+      systemPrompt = SYSTEM_PROMPT_EXISTING_APP.replace(/EXISTING_APP_NAME/g, existingAppName) + repoContextBlock;
     } else {
-      systemPrompt = SYSTEM_PROMPT_NEW_APP + stackInfo;
+      systemPrompt = SYSTEM_PROMPT_NEW_APP + repoContextBlock;
     }
 
     // Build the full message list with system prompt

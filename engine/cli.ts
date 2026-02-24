@@ -22,6 +22,7 @@ import { loadProjects, getActiveProject, addProject, removeProject, switchProjec
 import { gatherContext } from './context.ts';
 import { runPipeline, runFeaturePipeline } from './generate.ts';
 import { writeFiles, setupProject, gitCommit, gitPush, writeKnowledgeEntry, writeAppAgentsMd, buildDebrief } from './writer.ts';
+import { autoFixSpec } from './autofix.ts';
 import { log, logHeader, logStep, logError } from './log.ts';
 import { specSlug, specPort, type ProjectStack } from './types.ts';
 import {
@@ -31,6 +32,7 @@ import {
     isQueueRunning, setQueueRunning, areDependenciesMet,
 } from './queue.ts';
 import { closeDb, logBuild } from './db.ts';
+import { performStateAudit, updateHeartbeat, withRetry } from './health.ts';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -339,6 +341,17 @@ async function handleFeature(subcommand?: string, specPath?: string): Promise<vo
                 ? resolve(project.path, bridge.apps_dir, spec.target.app)
                 : resolve(project.path, spec.target.app);
             writeFiles(targetDir, result.files);
+            setupProject(targetDir, bridge.stack?.packageManager);
+
+            // Knowledge feedback + AGENTS.md (per-feature naming)
+            const featureStack = bridge.stack || { framework: 'unknown', packageManager: 'npm' };
+            const featureKbName = `${spec.target.app}--${spec.feature.slug}`;
+            writeKnowledgeEntry(project.path, featureKbName, result, featureStack, specPath);
+            writeAppAgentsMd(targetDir, spec.feature.name, featureStack, result.files);
+
+            // Archive completed spec + update status
+            updateSpecStatus(specPath, 'done');
+            archiveSpec(specPath);
 
             // Git commit + push
             gitCommit(project.path, `factory: add feature ${spec.feature.name} to ${spec.target.app}`);
@@ -487,6 +500,9 @@ async function handleQueueStart(): Promise<void> {
         logError('Queue is already running');
         process.exit(1);
     }
+    
+    // Recovery Audit: Check for zombie tasks/stale runner flag
+    performStateAudit();
 
     logHeader('🏭 Autonomous Build — Starting');
 
@@ -494,6 +510,10 @@ async function handleQueueStart(): Promise<void> {
     let processed = 0;
     let succeeded = 0;
     let failed = 0;
+    
+    // Heartbeat: Update database periodically to signal liveness
+    const heartbeatTimer = setInterval(updateHeartbeat, 30 * 1000); // 30s
+    updateHeartbeat(); // First one now
 
     try {
         const project = getActiveProject();
@@ -516,9 +536,60 @@ async function handleQueueStart(): Promise<void> {
 
             try {
                 if (current.kind === 'FeatureSpec') {
-                    // Feature build
-                    const spec = loadFeatureSpec(current.specFile);
-                    const result = await runFeaturePipeline(spec, context);
+                    // Feature build — validate YAML first, auto-fix if broken
+                    let spec;
+                    try {
+                        spec = loadFeatureSpec(current.specFile);
+                    } catch (parseErr) {
+                        const errMsg = parseErr instanceof Error ? parseErr.message : String(parseErr);
+                        log('⚠', `YAML parse error in ${current.specFile}: ${errMsg}`);
+
+                        // Try LLM auto-fix
+                        const specAbsPath = resolve(current.specFile);
+                        const fixResult = await withRetry(
+                            () => autoFixSpec(specAbsPath, errMsg),
+                            { maxAttempts: 3, delayMs: 2000, name: 'Auto-fix' }
+                        );
+
+                        if (fixResult.fixed) {
+                            // Retry loading the fixed spec
+                            try {
+                                spec = loadFeatureSpec(current.specFile);
+                                log('✓', `Spec auto-fixed and reloaded: ${current.specFile}`);
+                            } catch (retryErr) {
+                                const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+                                const durationMs = Date.now() - startTime;
+                                markFailed(current.id, `YAML still broken after auto-fix: ${retryMsg}`, '', durationMs);
+                                logBuild(current.specFile, 'FeatureSpec', 'failed', `# Build Debrief\n\n> YAML Parse Error (auto-fix failed)\n\n## Error\n\n${retryMsg}`, [], durationMs, {
+                                    errorSource: 'engine',
+                                    tokensIn: fixResult.tokensIn,
+                                    tokensOut: fixResult.tokensOut,
+                                    errorCategory: categorizeError(retryErr),
+                                });
+                                updateSpecStatus(current.specFile, 'review');
+                                failed++;
+                                item = dequeue();
+                                continue;
+                            }
+                        } else {
+                            const durationMs = Date.now() - startTime;
+                            markFailed(current.id, `YAML parse error (auto-fix exhausted): ${errMsg}`, '', durationMs);
+                            logBuild(current.specFile, 'FeatureSpec', 'failed', `# Build Debrief\n\n> YAML Parse Error\n\nAuto-fix was attempted but failed.\n\n## Original Error\n\n${errMsg}`, [], durationMs, {
+                                errorSource: 'engine',
+                                tokensIn: fixResult.tokensIn,
+                                tokensOut: fixResult.tokensOut,
+                                errorCategory: categorizeError(parseErr),
+                            });
+                            updateSpecStatus(current.specFile, 'review');
+                            failed++;
+                            item = dequeue();
+                            continue;
+                        }
+                    }
+                    const result = await withRetry(
+                        () => runFeaturePipeline(spec, context),
+                        { maxAttempts: 3, delayMs: 5000, name: 'Feature Pipeline' }
+                    );
 
                     const targetDir = bridge.apps_dir
                         ? resolve(project.path, bridge.apps_dir, spec.target.app)
@@ -528,41 +599,112 @@ async function handleQueueStart(): Promise<void> {
 
                     // Knowledge feedback + AGENTS.md
                     const featureStack = bridge.stack || { framework: 'unknown', packageManager: 'npm' };
-                    writeKnowledgeEntry(project.path, spec.feature.name, result, featureStack, current.specFile);
+                    const featureKbName = `${spec.target.app}--${spec.feature.slug}`;
+                    writeKnowledgeEntry(project.path, featureKbName, result, featureStack, current.specFile);
                     writeAppAgentsMd(targetDir, spec.feature.name, featureStack, result.files);
 
                     const durationMs = Date.now() - startTime;
                     const featureSummary = buildDebrief(spec.feature.name, result, featureStack, current.specFile, durationMs);
-                    markCompleted(current.id, `${result.files.length} files generated`, durationMs);
-                    logBuild(current.specFile, 'FeatureSpec', 'completed', featureSummary, result.files.map(f => f.filename), durationMs, {
-                        model: result.model,
-                        provider: result.provider,
-                        tokensIn: result.tokenUsage?.promptTokens,
-                        tokensOut: result.tokenUsage?.completionTokens,
-                    });
-                    updateSpecStatus(current.specFile, 'done');
-                    gitCommit(project.path, `factory: add feature ${spec.feature.name} to ${spec.target.app}`);
-                    succeeded++;
+
+                    if (result.success) {
+                        markCompleted(current.id, `${result.files.length} files generated`, durationMs);
+                        logBuild(current.specFile, 'FeatureSpec', 'completed', featureSummary, result.files.map(f => f.filename), durationMs, {
+                            model: result.model,
+                            provider: result.provider,
+                            tokensIn: result.tokenUsage?.promptTokens,
+                            tokensOut: result.tokenUsage?.completionTokens,
+                        });
+                        updateSpecStatus(current.specFile, 'done');
+                        archiveSpec(current.specFile);
+                        gitCommit(project.path, `factory: add feature ${spec.feature.name} to ${spec.target.app}`);
+                        succeeded++;
+                    } else {
+                        markFailed(
+                            current.id,
+                            result.errors?.join('; ') || 'Feature build had errors',
+                            `${result.files.length} files generated with errors`,
+                            durationMs
+                        );
+                        logBuild(current.specFile, 'FeatureSpec', 'failed', featureSummary, result.files.map(f => f.filename), durationMs, {
+                            model: result.model,
+                            provider: result.provider,
+                            tokensIn: result.tokenUsage?.promptTokens,
+                            tokensOut: result.tokenUsage?.completionTokens,
+                            errorSource: 'engine',
+                        });
+                        updateSpecStatus(current.specFile, 'review');
+                        failed++;
+                    }
                 } else {
                     // App build — full pipeline
                     const spec = loadSpec(current.specFile);
                     const validation = validateSpec(spec);
 
                     if (!validation.passed) {
-                        const durationMs = Date.now() - startTime;
-                        markFailed(current.id, `Validation failed: ${validation.errors.join(', ')}`, '', durationMs);
-                        logBuild(current.specFile, 'AppSpec', 'failed', `# Build Debrief\n\n> Validation failed\n\n## Issues\n\n${validation.errors.map(e => `- ${e}`).join('\n')}`, [], durationMs, {
-                            errorSource: 'engine',
-                        });
-                        updateSpecStatus(current.specFile, 'review');
-                        failed++;
-                        item = dequeue();
-                        continue;
+                        // Try LLM auto-fix on the spec
+                        log('⚠', `AppSpec validation failed: ${validation.errors.join(', ')}`);
+                        const specAbsPath = resolve(current.specFile);
+                        const fixResult = await withRetry(
+                            () => autoFixSpec(specAbsPath, `Validation errors: ${validation.errors.join('; ')}`),
+                            { maxAttempts: 3, delayMs: 2000, name: 'Auto-fix' }
+                        );
+
+                        if (fixResult.fixed) {
+                            // Retry validation with fixed spec
+                            try {
+                                const fixedSpec = loadSpec(current.specFile);
+                                const reValidation = validateSpec(fixedSpec);
+                                if (reValidation.passed) {
+                                    log('✓', `AppSpec auto-fixed and re-validated: ${current.specFile}`);
+                                    // Replace spec variable and continue with the pipeline
+                                    Object.assign(spec, fixedSpec);
+                                } else {
+                                    const durationMs = Date.now() - startTime;
+                                    markFailed(current.id, `Validation still fails after auto-fix: ${reValidation.errors.join(', ')}`, '', durationMs);
+                                    logBuild(current.specFile, 'AppSpec', 'failed', `# Build Debrief\n\n> Validation failed (auto-fix didn't resolve)\n\n## Issues\n\n${reValidation.errors.map(e => `- ${e}`).join('\n')}`, [], durationMs, {
+                                        errorSource: 'engine',
+                                        tokensIn: fixResult.tokensIn,
+                                        tokensOut: fixResult.tokensOut,
+                                        errorCategory: categorizeError(reValidation.errors),
+                                    });
+                                    updateSpecStatus(current.specFile, 'review');
+                                    failed++;
+                                    item = dequeue();
+                                    continue;
+                                }
+                            } catch {
+                                const durationMs = Date.now() - startTime;
+                                markFailed(current.id, `Auto-fix broke the spec further`, '', durationMs);
+                                logBuild(current.specFile, 'AppSpec', 'failed', `# Build Debrief\n\n> Auto-fix produced invalid YAML`, [], durationMs, {
+                                    errorSource: 'engine',
+                                });
+                                updateSpecStatus(current.specFile, 'review');
+                                failed++;
+                                item = dequeue();
+                                continue;
+                            }
+                        } else {
+                            const durationMs = Date.now() - startTime;
+                            markFailed(current.id, `Validation failed (auto-fix exhausted): ${validation.errors.join(', ')}`, '', durationMs);
+                            logBuild(current.specFile, 'AppSpec', 'failed', `# Build Debrief\n\n> Validation failed\n\nAuto-fix was attempted but failed.\n\n## Issues\n\n${validation.errors.map(e => `- ${e}`).join('\n')}`, [], durationMs, {
+                                errorSource: 'engine',
+                                tokensIn: fixResult.tokensIn,
+                                tokensOut: fixResult.tokensOut,
+                                errorCategory: categorizeError(validation.errors),
+                            });
+                            updateSpecStatus(current.specFile, 'review');
+                            failed++;
+                            item = dequeue();
+                            continue;
+                        }
                     }
 
                     // Mark as validating
                     updateSpecStatus(current.specFile, 'validation');
-                    const result = await runPipeline(spec, context);
+                    const result = await withRetry(
+                        () => runPipeline(spec, context),
+                        { maxAttempts: 3, delayMs: 5000, name: 'App Pipeline' }
+                    );
 
                     const slug = specSlug(spec);
                     const targetDir = bridge.apps_dir
@@ -620,10 +762,11 @@ async function handleQueueStart(): Promise<void> {
                 }
             } catch (error) {
                 const durationMs = Date.now() - startTime;
-                const msg = error instanceof Error ? error.message : String(error);
-                markFailed(current.id, msg, '', durationMs);
+                const category = categorizeError(error);
+                markFailed(current.id, msg, '', durationMs, category);
                 logBuild(current.specFile, current.kind, 'failed', `# Build Debrief\n\n> Build failed\n\n## Error\n\n${msg}`, [], durationMs, {
                     errorSource: msg.includes('API error') || msg.includes('returned empty') ? 'llm' : 'engine',
+                    errorCategory: category,
                 });
                 updateSpecStatus(current.specFile, 'review');
                 logError(`Failed: ${msg}`);
@@ -654,6 +797,7 @@ async function handleQueueStart(): Promise<void> {
             gitPush(project.path);
         }
     } finally {
+        clearInterval(heartbeatTimer);
         setQueueRunning(false);
         closeDb();
     }

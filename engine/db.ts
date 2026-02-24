@@ -75,6 +75,7 @@ function initSchema(db: Database.Database): void {
     );
     insert.run('is_running', 'false');
     insert.run('last_run_at', '');
+    insert.run('last_heartbeat_at', '');
 
     // ── Migrations: add new columns if missing ──
     const cols = db.prepare(`PRAGMA table_info(builds)`).all() as { name: string }[];
@@ -85,6 +86,7 @@ function initSchema(db: Database.Database): void {
         ['tokens_in', 'INTEGER DEFAULT 0'],
         ['tokens_out', 'INTEGER DEFAULT 0'],
         ['error_source', 'TEXT'],
+        ['error_category', 'TEXT'],
     ];
     for (const [col, type] of migrations) {
         if (!colNames.has(col)) {
@@ -104,6 +106,11 @@ function initSchema(db: Database.Database): void {
             db.exec(`ALTER TABLE queue_items ADD COLUMN ${col} ${type}`);
         }
     }
+
+    // Add error_category if missing
+    if (!qColNames.has('error_category')) {
+        db.exec(`ALTER TABLE queue_items ADD COLUMN error_category TEXT`);
+    }
 }
 
 /** Log a build result to the knowledge base as a structured debrief. */
@@ -120,6 +127,7 @@ export function logBuild(
         tokensIn?: number;
         tokensOut?: number;
         errorSource?: 'llm' | 'engine' | null;
+        errorCategory?: 'transient' | 'permanent' | null;
     },
 ): void {
     const db = getDb();
@@ -130,8 +138,8 @@ export function logBuild(
         : `Built ${filesGenerated.length} file(s) in ${(durationMs / 1000).toFixed(1)}s`;
 
     db.prepare(`
-        INSERT INTO builds (id, spec_file, kind, timestamp, duration_ms, status, files_generated, output, notes, model, provider, tokens_in, tokens_out, error_source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO builds (id, spec_file, kind, timestamp, duration_ms, status, files_generated, output, notes, model, provider, tokens_in, tokens_out, error_source, error_category)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
         id,
         specFile,
@@ -147,6 +155,7 @@ export function logBuild(
         opts?.tokensIn || 0,
         opts?.tokensOut || 0,
         opts?.errorSource || null,
+        opts?.errorCategory || null,
     );
 }
 

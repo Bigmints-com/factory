@@ -25,7 +25,7 @@ function getDb() {
       spec_file TEXT NOT NULL,
       kind TEXT NOT NULL CHECK(kind IN ('AppSpec', 'FeatureSpec')),
       status TEXT NOT NULL DEFAULT 'pending'
-        CHECK(status IN ('pending', 'running', 'completed', 'failed', 'needs-attention')),
+        CHECK(status IN ('pending', 'running', 'completed', 'failed', 'needs-attention', 'blocked')),
       priority INTEGER NOT NULL DEFAULT 0,
       added_at TEXT NOT NULL,
       started_at TEXT,
@@ -53,6 +53,43 @@ function getDb() {
   }
   if (!qColNames.has('depends_on')) {
     db.exec(`ALTER TABLE queue_items ADD COLUMN depends_on TEXT DEFAULT '[]'`);
+  }
+  if (!qColNames.has('target_app')) {
+    db.exec(`ALTER TABLE queue_items ADD COLUMN target_app TEXT DEFAULT ''`);
+  }
+
+  // Migration: update CHECK constraint to include 'blocked' status
+  // SQLite can't ALTER CHECK constraints — recreate the table if needed
+  try {
+    // Quick test: try inserting and rolling back a blocked row
+    db.exec(`BEGIN; INSERT INTO queue_items (id, spec_file, kind, status, added_at) VALUES ('__test_blocked__', '__test__', 'AppSpec', 'blocked', ''); DELETE FROM queue_items WHERE id = '__test_blocked__'; COMMIT;`);
+  } catch {
+    // CHECK constraint rejected 'blocked' — need to recreate table
+    db.exec(`
+      ALTER TABLE queue_items RENAME TO queue_items_old;
+      CREATE TABLE queue_items (
+        id TEXT PRIMARY KEY,
+        spec_file TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('AppSpec', 'FeatureSpec')),
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK(status IN ('pending', 'running', 'completed', 'failed', 'needs-attention', 'blocked')),
+        priority INTEGER NOT NULL DEFAULT 0,
+        added_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        output TEXT DEFAULT '',
+        error TEXT,
+        duration_ms INTEGER,
+        phase INTEGER DEFAULT 0,
+        depends_on TEXT DEFAULT '[]',
+        target_app TEXT DEFAULT ''
+      );
+      INSERT INTO queue_items SELECT
+        id, spec_file, kind, status, priority, added_at, started_at, completed_at, output, error, duration_ms,
+        COALESCE(phase, 0), COALESCE(depends_on, '[]'), COALESCE(target_app, '')
+      FROM queue_items_old;
+      DROP TABLE queue_items_old;
+    `);
   }
 
   return db;
@@ -122,8 +159,9 @@ export async function GET() {
           WHEN 'running' THEN 0
           WHEN 'pending' THEN 1
           WHEN 'needs-attention' THEN 2
-          WHEN 'failed' THEN 3
-          WHEN 'completed' THEN 4
+          WHEN 'blocked' THEN 3
+          WHEN 'failed' THEN 4
+          WHEN 'completed' THEN 5
         END,
         priority DESC,
         added_at ASC
@@ -134,7 +172,7 @@ export async function GET() {
     `).all() as { status: string; count: number }[];
 
     const statsObj: Record<string, number> = {
-      pending: 0, running: 0, completed: 0, failed: 0, 'needs-attention': 0, total: 0,
+      pending: 0, running: 0, completed: 0, failed: 0, 'needs-attention': 0, blocked: 0, total: 0,
     };
     for (const row of stats) {
       statsObj[row.status] = row.count;
@@ -158,7 +196,7 @@ export async function GET() {
 /** POST — enqueue a new spec */
 export async function POST(request: Request) {
   try {
-    const { specFile, kind, phase, dependsOn } = await request.json();
+    const { specFile, kind, phase, dependsOn, buildAll } = await request.json();
 
     if (!specFile || !kind) {
       return NextResponse.json({ error: 'specFile and kind are required' }, { status: 400 });
@@ -167,7 +205,8 @@ export async function POST(request: Request) {
     const db = getDb();
 
     // For FeatureSpecs, validate that the target app is already in the queue
-    if (kind === 'FeatureSpec') {
+    // Skip this check during Build All — ordering is handled by the caller
+    if (kind === 'FeatureSpec' && !buildAll) {
       const projectPath = getActiveProjectPath();
       if (projectPath) {
         try {
@@ -242,10 +281,26 @@ export async function POST(request: Request) {
     const phaseVal = phase ?? 0;
     const dependsOnVal = JSON.stringify(dependsOn ?? []);
 
+    // Extract target_app for FeatureSpecs so the queue processor can do implicit dependency checks
+    let targetApp = '';
+    if (kind === 'FeatureSpec') {
+      const projectPath = getActiveProjectPath();
+      if (projectPath) {
+        try {
+          const specPath = join(projectPath, '.factory', 'specs', specFile);
+          if (existsSync(specPath)) {
+            const raw = readFileSync(specPath, 'utf-8');
+            const parsed = parseYaml(raw);
+            targetApp = parsed.target?.app || '';
+          }
+        } catch {}
+      }
+    }
+
     db.prepare(`
-      INSERT INTO queue_items (id, spec_file, kind, status, priority, phase, depends_on, added_at)
-      VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
-    `).run(id, specFile, kind, phaseVal, dependsOnVal, now);
+      INSERT INTO queue_items (id, spec_file, kind, status, priority, phase, depends_on, target_app, added_at)
+      VALUES (?, ?, ?, 'pending', 0, ?, ?, ?, ?)
+    `).run(id, specFile, kind, phaseVal, dependsOnVal, targetApp, now);
 
     const item = db.prepare('SELECT * FROM queue_items WHERE id = ?').get(id);
     db.close();
@@ -266,6 +321,28 @@ export async function DELETE(request: Request) {
     }
 
     const db = getDb();
+
+    // Check if queue is running — block all deletions while active
+    const runningState = db.prepare(`SELECT value FROM queue_state WHERE key = 'is_running'`).get() as { value: string } | undefined;
+    if (runningState?.value === 'true') {
+      db.close();
+      return NextResponse.json({ error: 'Cannot delete items while queue is running' }, { status: 409 });
+    }
+
+    // Only allow deleting pending items
+    const item = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(id) as { status: string } | undefined;
+    if (!item) {
+      db.close();
+      return NextResponse.json({ error: 'Item not found' }, { status: 404 });
+    }
+    if (item.status !== 'pending') {
+      db.close();
+      return NextResponse.json(
+        { error: `Cannot delete ${item.status} items. Use "Clear Done" for completed items.` },
+        { status: 409 }
+      );
+    }
+
     const result = db.prepare('DELETE FROM queue_items WHERE id = ?').run(id);
     db.close();
 

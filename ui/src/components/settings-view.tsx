@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -95,29 +95,34 @@ export function SettingsView() {
 
     useEffect(() => { loadSettings(); }, [loadSettings]);
 
-    // Save settings
-    const saveAll = async () => {
-        if (!settings) return;
-        setSaving(true);
-        try {
-            const res = await fetch('/api/settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(settings),
-            });
-            const data = await res.json();
-            if (data.ok) {
-                toast.success('Settings saved');
-                setDirty(false);
-            } else {
-                toast.error(data.error || 'Failed to save');
+    // Auto-save when settings change
+    const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    useEffect(() => {
+        if (!dirty || !settings) return;
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = setTimeout(async () => {
+            setSaving(true);
+            try {
+                const res = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(settings),
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    toast.success('Settings saved');
+                    setDirty(false);
+                } else {
+                    toast.error(data.error || 'Failed to save');
+                }
+            } catch {
+                toast.error('Failed to save settings');
+            } finally {
+                setSaving(false);
             }
-        } catch {
-            toast.error('Failed to save settings');
-        } finally {
-            setSaving(false);
-        }
-    };
+        }, 500);
+        return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
+    }, [dirty, settings]);
 
     // Update a provider field
     const updateProvider = (id: string, updates: Partial<LLMProvider>) => {
@@ -399,16 +404,13 @@ export function SettingsView() {
                 );
             })}
 
-            {/* Save button */}
-            {dirty && (
+            {/* Auto-save indicator */}
+            {saving && (
                 <div className="flex justify-end sticky bottom-4">
-                    <Button onClick={saveAll} disabled={saving} className="gap-2 shadow-lg">
-                        {saving
-                            ? <Loader2 className="h-4 w-4 animate-spin" />
-                            : <Save className="h-4 w-4" />
-                        }
-                        Save Settings
-                    </Button>
+                    <Badge variant="outline" className="gap-1.5 bg-background shadow-lg">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        Saving...
+                    </Badge>
                 </div>
             )}
         </div>

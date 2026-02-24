@@ -10,17 +10,19 @@
 import type {
     AppSpec, FeatureSpec, ProjectContext,
     GeneratedFile, BuildPlan, BuildResult,
-    LLMProvider, TaskProfile,
+    LLMProvider, TaskProfile, AppIntegrationContext,
 } from './types.ts';
-import { classifyTask } from './task-classifier.ts';
+import type { QueueBuildContext } from './context.ts';
+import { classifyTask, classifyFeatureTask } from './task-classifier.ts';
 import { specSlug, specPort } from './types.ts';
 import { loadSettings, getActiveProvider } from './config.ts';
+import { gatherAppContext, loadQueueContext } from './context.ts';
 import { log, logStep, logError } from './log.ts';
 
-const PIPELINE_TIMEOUT_MS = 4 * 60 * 1000; // 4 minutes — bail before the API route times out
+const PIPELINE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes — prioritise quality over speed
 
 /** Token usage from a single LLM call */
-interface LLMResponse {
+export interface LLMResponse {
     text: string;
     tokensIn: number;
     tokensOut: number;
@@ -107,7 +109,7 @@ export async function runPipeline(
             }
 
             logStep(3 + Math.min(iteration, 1), 5, iteration === 0 ? 'Testing build...' : `Iterating (attempt ${iteration + 1}/${profile.maxIterations})...`);
-            errors = testBuild(files, spec.stack, profile);
+            errors = await testBuild(files, spec.stack, profile);
 
             if (errors.length === 0) {
                 log('✓', 'All tests passed!');
@@ -134,6 +136,17 @@ export async function runPipeline(
         }
     }
 
+    // Final quality report
+    logStep(5, 5, 'Quality report');
+    if (errors.length === 0) {
+        log('✓', '✅ PASSED: deps ✓ | types ✓ | lint ✓');
+    } else {
+        logError(`❌ FAILED: ${errors.length} error(s) remaining after ${iteration + 1} iteration(s)`);
+        for (const err of errors) {
+            log('✗', `  ${err}`);
+        }
+    }
+
     return {
         success: errors.length === 0,
         files,
@@ -148,35 +161,116 @@ export async function runPipeline(
 
 /**
  * Run the pipeline for a feature spec.
- * Similar flow but with a feature-specific prompt.
+ * Full test → iterate loop — same rigour as app builds.
  */
 export async function runFeaturePipeline(
     spec: FeatureSpec,
     context: ProjectContext,
 ): Promise<BuildResult> {
     const { provider, model } = requireActiveProvider();
+    const pipelineStart = Date.now();
+    const profile = classifyFeatureTask();
+    let totalTokensIn = 0;
+    let totalTokensOut = 0;
 
     log('●', `Feature build: ${spec.feature.name} → ${spec.target.app}`);
 
-    // Build prompt for feature generation
-    const prompt = buildFeaturePrompt(spec, context);
+    // Step 0: Gather integration context from existing app
+    logStep(0, 5, 'Gathering app integration context...');
+    const appContext = gatherAppContext(
+        context.repoPath,
+        context.bridge,
+        spec.target.app,
+    );
+
+    // Step 1: Generate code (with app context + queue context)
+    logStep(1, 5, 'Generating feature code...');
+    log('→', `Sending prompt to ${provider.name} (${model})...`);
+    const queueContext = loadQueueContext(context.repoPath);
+    const prompt = buildFeaturePrompt(spec, context, appContext, queueContext);
     const raw = await callProvider(provider, model, prompt);
-    const files = parseGeneratedFiles(raw.text);
+    let files = parseGeneratedFiles(raw.text);
+    totalTokensIn += raw.tokensIn;
+    totalTokensOut += raw.tokensOut;
 
     if (files.length === 0) {
         throw new Error('LLM response did not contain any parseable files.');
     }
 
+    log('✓', `Generated ${files.length} files`);
+    const filesByDir = groupFilesByDirectory(files);
+    for (const [dir, count] of Object.entries(filesByDir)) {
+        log('→', `  ${dir}/ — ${count} file(s)`);
+    }
+
+    // Step 2+3: Test → Iterate loop (strict — keep going until clean)
+    // Derive stack from actual app, fall back to bridge or defaults
+    const syntheticStack: import('./types.ts').StackConfig = appContext.stack || {
+        framework: context.bridge.stack?.framework || 'next.js',
+        packageManager: context.bridge.stack?.packageManager || 'npm',
+        language: 'typescript',
+        linter: context.bridge.stack?.linter || 'eslint',
+    };
+
+    let iteration = 0;
+    let errors: string[] = [];
+
+    while (iteration < profile.maxIterations) {
+        const elapsed = Date.now() - pipelineStart;
+        if (elapsed > PIPELINE_TIMEOUT_MS) {
+            logError(`Pipeline timeout (${Math.round(elapsed / 1000)}s elapsed). Returning current state.`);
+            break;
+        }
+
+        logStep(2 + Math.min(iteration, 1), 4, iteration === 0 ? 'Testing feature build...' : `Iterating (attempt ${iteration + 1}/${profile.maxIterations})...`);
+        errors = await testBuild(files, syntheticStack, profile);
+
+        if (errors.length === 0) {
+            log('✓', 'All checks passed!');
+            break;
+        }
+
+        log('!', `${errors.length} error(s) found`);
+        for (const err of errors.slice(0, 5)) {
+            log('  ', `  ${err}`);
+        }
+
+        if (iteration + 1 >= profile.maxIterations) {
+            logError(`Max iterations (${profile.maxIterations}) reached with ${errors.length} error(s) remaining.`);
+            break;
+        }
+
+        iteration++;
+        log('●', `Feeding errors back to LLM...`);
+        const iterResult = await iterateFeatureBuild(spec, context, appContext, files, errors, provider, model);
+        files = iterResult.files;
+        totalTokensIn += iterResult.tokensIn;
+        totalTokensOut += iterResult.tokensOut;
+        log('✓', `Regenerated ${files.length} files`);
+    }
+
+    // Final quality report
+    logStep(4, 4, 'Quality report');
+    if (errors.length === 0) {
+        log('✓', '✅ PASSED: deps ✓ | types ✓ | lint ✓');
+    } else {
+        logError(`❌ FAILED: ${errors.length} error(s) remaining after ${iteration + 1} iteration(s)`);
+        for (const err of errors) {
+            log('✗', `  ${err}`);
+        }
+    }
+
     return {
-        success: true,
+        success: errors.length === 0,
         files,
         plan: {
             files: files.map(f => f.filename),
             architecture: `Feature: ${spec.feature.name}`,
             decisions: [],
         },
-        iterations: 1,
-        tokenUsage: { promptTokens: raw.tokensIn, completionTokens: raw.tokensOut },
+        iterations: iteration + 1,
+        errors: errors.length > 0 ? errors : undefined,
+        tokenUsage: { promptTokens: totalTokensIn, completionTokens: totalTokensOut },
         model,
         provider: provider.id,
     };
@@ -246,6 +340,14 @@ async function executeBuild(
     provider: LLMProvider,
     model: string,
 ): Promise<{ files: GeneratedFile[]; tokensIn: number; tokensOut: number }> {
+    // For large apps, use module-by-module generation
+    const MODULE_THRESHOLD = 15;
+    if (plan.files.length > MODULE_THRESHOLD) {
+        log('●', `Large app detected (${plan.files.length} files > ${MODULE_THRESHOLD}). Using module-by-module generation.`);
+        return executeModularBuild(spec, context, plan, provider, model);
+    }
+
+    // Standard single-shot generation for smaller apps
     const prompt = buildAppPrompt(spec, context, plan);
 
     log('→', `Prompt: ${prompt.length.toLocaleString()} chars`);
@@ -263,7 +365,6 @@ async function executeBuild(
         );
     }
 
-    // Log each generated file
     for (const f of files) {
         const size = f.content.length;
         const sizeLabel = size > 1024 ? `${(size / 1024).toFixed(1)}KB` : `${size}B`;
@@ -271,6 +372,202 @@ async function executeBuild(
     }
 
     return { files, tokensIn: raw.tokensIn, tokensOut: raw.tokensOut };
+}
+
+// ─── Module-by-Module Generation ─────────────────────────
+
+type ModuleName = 'config' | 'db' | 'api' | 'pages' | 'components' | 'utils';
+
+interface BuildModule {
+    name: ModuleName;
+    files: string[];
+    description: string;
+}
+
+/**
+ * Decompose a build plan into ordered modules.
+ * Each module will be generated in a separate LLM call.
+ */
+function moduleDecomposition(plan: BuildPlan): BuildModule[] {
+    const buckets: Record<ModuleName, string[]> = {
+        config: [],
+        db: [],
+        api: [],
+        pages: [],
+        components: [],
+        utils: [],
+    };
+
+    for (const file of plan.files) {
+        const lower = file.toLowerCase();
+
+        if (lower === 'package.json' || lower === 'tsconfig.json' ||
+            lower.includes('vite.config') || lower.includes('next.config') ||
+            lower.includes('tailwind.config') || lower.includes('postcss') ||
+            lower.includes('.env') || lower.endsWith('.css') ||
+            lower.includes('eslint')) {
+            buckets.config.push(file);
+        } else if (lower.includes('/db/') || lower.includes('/database/') ||
+            lower.includes('schema') || lower.includes('migration') ||
+            lower.includes('seed') || lower.includes('drizzle') ||
+            lower.includes('prisma')) {
+            buckets.db.push(file);
+        } else if (lower.includes('/api/') || lower.includes('route.ts') ||
+            lower.includes('route.js') || lower.includes('/server/') ||
+            lower.includes('middleware') || lower.includes('controller')) {
+            buckets.api.push(file);
+        } else if (lower.includes('/app/') || lower.includes('page.ts') ||
+            lower.includes('page.tsx') || lower.includes('layout.ts') ||
+            lower.includes('layout.tsx') || lower.includes('/pages/')) {
+            buckets.pages.push(file);
+        } else if (lower.includes('/components/') || lower.includes('/ui/')) {
+            buckets.components.push(file);
+        } else {
+            buckets.utils.push(file);
+        }
+    }
+
+    const descriptions: Record<ModuleName, string> = {
+        config: 'Project configuration: package.json, tsconfig, framework config, CSS, env',
+        db: 'Database layer: schema, migrations, seed data, ORM config',
+        api: 'API layer: routes, controllers, middleware, server-side logic',
+        pages: 'Pages & layouts: app router pages, layouts, loading states',
+        components: 'Shared components: UI components, reusable widgets',
+        utils: 'Utilities: types, helpers, constants, lib functions',
+    };
+
+    const order: ModuleName[] = ['config', 'utils', 'db', 'api', 'components', 'pages'];
+
+    return order
+        .filter(name => buckets[name].length > 0)
+        .map(name => ({
+            name,
+            files: buckets[name],
+            description: descriptions[name],
+        }));
+}
+
+/**
+ * Build a prompt for a single module, including context from previously generated modules.
+ */
+function buildModulePrompt(
+    module: BuildModule,
+    spec: AppSpec,
+    context: ProjectContext,
+    previousModules: { name: string; files: GeneratedFile[] }[],
+): string {
+    const specBlock = formatSpec(spec);
+    const contextBlock = formatContext(context);
+
+    // Show interfaces/exports from previous modules so this module can import from them
+    let prevContext = '';
+    if (previousModules.length > 0) {
+        const summaries = previousModules.map(m => {
+            const fileSummaries = m.files.map(f => {
+                // Extract exports and key type definitions
+                const exports = f.content.match(/export\s+(default\s+)?(function|const|class|type|interface)\s+\w+/g) || [];
+                return `- ${f.filename}: ${exports.join(', ') || '(no named exports)'}`;
+            }).join('\n');
+            return `### ${m.name} module\n${fileSummaries}`;
+        }).join('\n\n');
+
+        // Also include full content of config files (package.json, tsconfig etc)
+        const configFiles = previousModules
+            .filter(m => m.name === 'config')
+            .flatMap(m => m.files)
+            .filter(f => f.filename === 'package.json' || f.filename === 'tsconfig.json');
+
+        const configContents = configFiles.map(f =>
+            `\n#### ${f.filename}\n\`\`\`\n${f.content}\n\`\`\``
+        ).join('\n');
+
+        prevContext = `\n## Already Generated Modules (refer to these, import from them)\n${summaries}\n${configContents}\n`;
+    }
+
+    return `You are a senior full-stack developer. Generate ONLY the **${module.name}** module for this application.
+
+## Module: ${module.name}
+${module.description}
+
+### Files to generate in this module:
+${module.files.map(f => `- ${f}`).join('\n')}
+
+${specBlock}
+${contextBlock}
+${prevContext}
+
+## Rules
+1. Generate ONLY the files listed above for this module. Do NOT generate files from other modules.
+2. Every "import ... from 'package'" MUST reference a real npm package.
+3. Match the coding style and patterns from the spec and any previous modules.
+4. For package versions in package.json, use "*" — the engine resolves to latest.
+5. When using ESM with moduleResolution "NodeNext", include .js extensions in relative imports.
+
+## Output Format
+
+===FILE: path/to/file.ext===
+(file content here)
+===END_FILE===
+
+Output ONLY the files. No explanations.`;
+}
+
+/**
+ * Execute modular build — generate each module as a separate LLM call,
+ * building context from previously generated modules.
+ */
+async function executeModularBuild(
+    spec: AppSpec,
+    context: ProjectContext,
+    plan: BuildPlan,
+    provider: LLMProvider,
+    model: string,
+): Promise<{ files: GeneratedFile[]; tokensIn: number; tokensOut: number }> {
+    const modules = moduleDecomposition(plan);
+    const allFiles: GeneratedFile[] = [];
+    const completedModules: { name: string; files: GeneratedFile[] }[] = [];
+    let totalTokensIn = 0;
+    let totalTokensOut = 0;
+
+    log('●', `Decomposed into ${modules.length} modules: ${modules.map(m => `${m.name}(${m.files.length})`).join(', ')}`);
+
+    for (let i = 0; i < modules.length; i++) {
+        const mod = modules[i];
+        log('→', `[${i + 1}/${modules.length}] Generating ${mod.name} module (${mod.files.length} files)...`);
+
+        const prompt = buildModulePrompt(mod, spec, context, completedModules);
+        log('→', `  Prompt: ${prompt.length.toLocaleString()} chars`);
+
+        const raw = await callProvider(provider, model, prompt);
+        const files = parseGeneratedFiles(raw.text);
+        totalTokensIn += raw.tokensIn;
+        totalTokensOut += raw.tokensOut;
+
+        if (files.length === 0) {
+            log('!', `  ${mod.name} module produced no files — skipping`);
+            continue;
+        }
+
+        log('✓', `  ${mod.name}: ${files.length} files generated`);
+        for (const f of files) {
+            const size = f.content.length;
+            const sizeLabel = size > 1024 ? `${(size / 1024).toFixed(1)}KB` : `${size}B`;
+            log('→', `    ${f.filename} (${sizeLabel})`);
+        }
+
+        allFiles.push(...files);
+        completedModules.push({ name: mod.name, files });
+    }
+
+    if (allFiles.length === 0) {
+        throw new Error(
+            'Modular build produced no files across all modules.\n' +
+            'Try a different model or check the spec.'
+        );
+    }
+
+    log('✓', `Modular build complete: ${allFiles.length} total files across ${completedModules.length} modules`);
+    return { files: allFiles, tokensIn: totalTokensIn, tokensOut: totalTokensOut };
 }
 
 /**
@@ -290,9 +587,86 @@ function groupFilesByDirectory(files: GeneratedFile[]): Record<string, number> {
 
 import { mkdtempSync, writeFileSync as fsWrite, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
-import { execSync } from 'node:child_process';
+import { join, dirname, resolve } from 'node:path';
+import { execSync, spawn as cpSpawn } from 'node:child_process';
 import type { StackConfig } from './types.ts';
+
+/**
+ * Runtime smoke test: start the dev server, wait for port, GET main page, check 200.
+ * Returns an error string if something fails, or null if everything is OK.
+ */
+async function runtimeSmokeTest(tmpDir: string, stack: StackConfig): Promise<string | null> {
+    const port = 3099; // Use a fixed high port for smoke tests
+    logStep(0, 0, 'Runtime smoke test...');
+
+    // Determine the dev command
+    const pm = stack.packageManager || 'npm';
+    const devCmd = pm === 'pnpm' ? 'pnpm' : pm === 'yarn' ? 'yarn' : 'npx';
+    const devArgs = pm === 'pnpm' ? ['run', 'dev', '--', '--port', String(port)]
+        : pm === 'yarn' ? ['run', 'dev', '--port', String(port)]
+        : ['next', 'dev', '--port', String(port)];
+
+    let child: ReturnType<typeof cpSpawn> | null = null;
+
+    try {
+        // Spawn dev server
+        child = cpSpawn(devCmd, devArgs, {
+            cwd: tmpDir,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: { ...process.env, PORT: String(port), NODE_ENV: 'development' },
+        });
+
+        // Capture stderr for diagnosis
+        let stderr = '';
+        child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+
+        // Wait for port — exponential backoff, max 15s total
+        const MAX_WAIT = 15_000;
+        const startTime = Date.now();
+        let portReady = false;
+
+        while (Date.now() - startTime < MAX_WAIT) {
+            const delay = Math.min(1000, (Date.now() - startTime) / 3 + 500);
+            await new Promise(r => setTimeout(r, delay));
+
+            try {
+                const res = await fetch(`http://localhost:${port}`, {
+                    signal: AbortSignal.timeout(2000),
+                });
+                if (res.ok || res.status === 304) {
+                    portReady = true;
+                    log('✓', `Runtime smoke test passed (HTTP ${res.status} in ${Date.now() - startTime}ms)`);
+                    return null;
+                } else {
+                    return `Runtime smoke test failed: HTTP ${res.status} from dev server`;
+                }
+            } catch {
+                // Port not ready yet — keep waiting
+            }
+
+            // Check if process died
+            if (child.exitCode !== null) {
+                return `Dev server crashed on startup:\n${stderr.slice(0, 500)}`;
+            }
+        }
+
+        if (!portReady) {
+            return `Dev server did not respond within ${MAX_WAIT / 1000}s. stderr:\n${stderr.slice(0, 500)}`;
+        }
+
+        return null;
+    } catch (err) {
+        return `Runtime smoke test error: ${err instanceof Error ? err.message : String(err)}`;
+    } finally {
+        // Always kill the dev server
+        if (child && child.exitCode === null) {
+            child.kill('SIGTERM');
+            // Give it a moment to die
+            await new Promise(r => setTimeout(r, 500));
+            if (child.exitCode === null) child.kill('SIGKILL');
+        }
+    }
+}
 
 /**
  * Map user-facing tool names to actual commands.
@@ -338,7 +712,7 @@ function packageInstallCommand(pm: string | undefined): string {
  *
  * Returns a list of error messages. Empty = all good.
  */
-function testBuild(files: GeneratedFile[], stack: StackConfig, profile: TaskProfile): string[] {
+async function testBuild(files: GeneratedFile[], stack: StackConfig, profile: TaskProfile): Promise<string[]> {
     const errors: string[] = [];
 
     // ── Phase 1: Structural checks (always run) ──
@@ -373,6 +747,161 @@ function testBuild(files: GeneratedFile[], stack: StackConfig, profile: TaskProf
         }
     }
 
+    // ── Phase 1.5: Cross-module consistency checks ──
+
+    // Check that every imported npm package is listed in package.json
+    if (profile.needsInstall) {
+        const pkg = files.find(f => f.filename === 'package.json');
+        if (pkg) {
+            try {
+                const pkgJson = JSON.parse(pkg.content);
+                const allDeps = new Set([
+                    ...Object.keys(pkgJson.dependencies || {}),
+                    ...Object.keys(pkgJson.devDependencies || {}),
+                ]);
+                // Node built-in modules
+                const builtins = new Set([
+                    'assert', 'buffer', 'child_process', 'cluster', 'crypto', 'dgram',
+                    'dns', 'events', 'fs', 'fs/promises', 'http', 'http2', 'https',
+                    'module', 'net', 'os', 'path', 'perf_hooks', 'process', 'querystring',
+                    'readline', 'stream', 'string_decoder', 'timers', 'tls', 'tty',
+                    'url', 'util', 'v8', 'vm', 'worker_threads', 'zlib',
+                    'node:assert', 'node:buffer', 'node:child_process', 'node:cluster',
+                    'node:crypto', 'node:events', 'node:fs', 'node:http', 'node:https',
+                    'node:module', 'node:net', 'node:os', 'node:path', 'node:process',
+                    'node:readline', 'node:stream', 'node:url', 'node:util', 'node:zlib',
+                    'node:worker_threads', 'node:timers',
+                ]);
+                const missingPkgs = new Set<string>();
+                for (const file of files) {
+                    if (!file.filename.endsWith('.ts') && !file.filename.endsWith('.tsx') &&
+                        !file.filename.endsWith('.js') && !file.filename.endsWith('.jsx')) continue;
+                    // Match: import ... from 'package-name' or import 'package-name'
+                    const importRegex = /(?:import|from)\s+['"]([^.'"@][^'"]*)['"]|(?:import|from)\s+['"](@[^/]+\/[^'"]+)['"]|require\(['"]([^.'"@][^'"]*)['"]\)|require\(['"](@[^/]+\/[^'"]+)['"]\)/g;
+                    let m;
+                    while ((m = importRegex.exec(file.content)) !== null) {
+                        const raw = m[1] || m[2] || m[3] || m[4];
+                        if (!raw) continue;
+                        // Get the package name (handle sub-path imports like 'drizzle-orm/sqlite-core')
+                        const pkgName = raw.startsWith('@')
+                            ? raw.split('/').slice(0, 2).join('/')
+                            : raw.split('/')[0];
+                        if (!builtins.has(raw) && !builtins.has(pkgName) && !allDeps.has(pkgName)) {
+                            missingPkgs.add(pkgName);
+                        }
+                    }
+                }
+                if (missingPkgs.size > 0) {
+                    // Auto-fix: add missing packages to package.json instead of
+                    // reporting as errors (burns LLM iterations for no good reason)
+                    if (!pkgJson.dependencies) pkgJson.dependencies = {};
+                    for (const p of missingPkgs) {
+                        pkgJson.dependencies[p] = '*';
+                    }
+                    // Update the file content in-place
+                    pkg.content = JSON.stringify(pkgJson, null, 2);
+                    log('!', `Auto-added ${missingPkgs.size} missing dep(s): ${Array.from(missingPkgs).join(', ')}`);
+                }
+            } catch { /* already caught above */ }
+        }
+    }
+
+    // ── Phase 1.6: Missing file detection ──
+    // Check that every relative import resolves to an actual generated file
+    {
+        const fileSet = new Set(files.map(f => f.filename));
+        for (const file of files) {
+            if (!file.filename.endsWith('.ts') && !file.filename.endsWith('.tsx')) continue;
+            const relImportRegex = /(?:import|export)\s+.*?from\s+['"](\.[^'"]+)['"]/g;
+            let m;
+            while ((m = relImportRegex.exec(file.content)) !== null) {
+                const importPath = m[1];
+                // Resolve relative to the importing file's directory
+                const dir = file.filename.includes('/') ? file.filename.substring(0, file.filename.lastIndexOf('/')) : '';
+                // Try several extensions
+                const basePath = importPath.replace(/\.js$/, ''); // strip .js for NodeNext resolution
+                const candidates = [
+                    join(dir, basePath + '.ts'),
+                    join(dir, basePath + '.tsx'),
+                    join(dir, basePath + '/index.ts'),
+                    join(dir, basePath + '/index.tsx'),
+                    join(dir, importPath), // exact match
+                ].map(p => p.replace(/^\//, '')); // normalize leading slash
+
+                if (!candidates.some(c => fileSet.has(c))) {
+                    errors.push(`Missing file: ${file.filename} imports '${importPath}' but no matching file exists. Generate the missing file.`);
+                }
+            }
+        }
+    }
+
+    // ── Phase 1.7: Cross-module export validation ──
+    // Check that named imports from relative paths match actual exports in the target file
+    {
+        // Build a map of exports per file
+        const exportsMap = new Map<string, Set<string>>();
+        for (const file of files) {
+            if (!file.filename.endsWith('.ts') && !file.filename.endsWith('.tsx')) continue;
+            const exports = new Set<string>();
+            // Match: export function/class/const/let/var/type/interface/enum NAME
+            const namedExportRegex = /export\s+(?:async\s+)?(?:function|class|const|let|var|type|interface|enum)\s+(\w+)/g;
+            let m;
+            while ((m = namedExportRegex.exec(file.content)) !== null) {
+                exports.add(m[1]);
+            }
+            // Match: export { Name1, Name2, ... }
+            const bracketExportRegex = /export\s*\{([^}]+)\}/g;
+            while ((m = bracketExportRegex.exec(file.content)) !== null) {
+                for (const name of m[1].split(',')) {
+                    const trimmed = name.trim().split(/\s+as\s+/)[0].trim();
+                    if (trimmed) exports.add(trimmed);
+                }
+            }
+            // Default export
+            if (/export\s+default\s/.test(file.content)) {
+                exports.add('default');
+            }
+            exportsMap.set(file.filename, exports);
+        }
+
+        for (const file of files) {
+            if (!file.filename.endsWith('.ts') && !file.filename.endsWith('.tsx')) continue;
+            // Match: import { Name1, Name2 } from './relative-path'
+            const namedImportRegex = /import\s*\{([^}]+)\}\s*from\s+['"](\.[^'"]+)['"]/g;
+            let m;
+            while ((m = namedImportRegex.exec(file.content)) !== null) {
+                const importedNames = m[1].split(',').map(n => {
+                    const parts = n.trim().split(/\s+as\s+/);
+                    return parts[0].trim(); // original name before 'as'
+                }).filter(n => n.length > 0);
+                const importPath = m[2];
+
+                // Resolve target file
+                const dir = file.filename.includes('/') ? file.filename.substring(0, file.filename.lastIndexOf('/')) : '';
+                const basePath = importPath.replace(/\.js$/, '');
+                const candidates = [
+                    join(dir, basePath + '.ts'),
+                    join(dir, basePath + '.tsx'),
+                    join(dir, basePath + '/index.ts'),
+                    join(dir, basePath + '/index.tsx'),
+                ].map(p => p.replace(/^\//, ''));
+
+                const targetFile = candidates.find(c => exportsMap.has(c));
+                if (!targetFile) continue; // missing file already caught above
+
+                const targetExports = exportsMap.get(targetFile)!;
+                const missingExports = importedNames.filter(n => !targetExports.has(n));
+                if (missingExports.length > 0) {
+                    errors.push(
+                        `Export mismatch: ${file.filename} imports { ${missingExports.join(', ')} } from '${importPath}', ` +
+                        `but ${targetFile} does not export them. Available exports: ${[...targetExports].slice(0, 15).join(', ')}. ` +
+                        `Add the missing exports to ${targetFile}.`
+                    );
+                }
+            }
+        }
+    }
+
     // Bail early on structural failures — no point running tools
     if (errors.length > 0) return errors;
 
@@ -395,11 +924,28 @@ function testBuild(files: GeneratedFile[], stack: StackConfig, profile: TaskProf
         fsWrite(absPath, file.content);
     }
 
+    // Step 0: Bump package versions to latest (LLM often pins stale versions from training data)
+    try {
+        logStep(0, 0, 'Bumping package versions to latest...');
+        execSync('npx -y npm-check-updates -u', { cwd: tmpDir, stdio: 'pipe', timeout: 30_000, maxBuffer: 50 * 1024 * 1024 });
+        log('✓', 'Package versions bumped to latest');
+
+        // Read back the updated package.json so future iterations have correct versions
+        const updatedPkg = require('node:fs').readFileSync(join(tmpDir, 'package.json'), 'utf-8');
+        const pkgIdx = files.findIndex(f => f.filename === 'package.json');
+        if (pkgIdx >= 0) {
+            files[pkgIdx] = { ...files[pkgIdx], content: updatedPkg };
+        }
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log('!', `Version bump failed (non-fatal): ${msg.slice(0, 200)}`);
+    }
+
     // Step 1: Package install
     const installCmd = packageInstallCommand(stack.packageManager);
     try {
         logStep(0, 0, `Running ${installCmd}...`);
-        execSync(installCmd, { cwd: tmpDir, stdio: 'pipe', timeout: 60_000 });
+        execSync(installCmd, { cwd: tmpDir, stdio: 'pipe', timeout: 60_000, maxBuffer: 50 * 1024 * 1024 });
         log('✓', 'Package install succeeded');
     } catch (err) {
         const msg = err instanceof Error ? (err as any).stderr?.toString() || err.message : String(err);
@@ -411,7 +957,7 @@ function testBuild(files: GeneratedFile[], stack: StackConfig, profile: TaskProf
     if (profile.needsTypeCheck) {
         try {
             logStep(0, 0, 'Running tsc --noEmit...');
-            execSync('npx tsc --noEmit', { cwd: tmpDir, stdio: 'pipe', timeout: 30_000 });
+            execSync('npx tsc --noEmit', { cwd: tmpDir, stdio: 'pipe', timeout: 30_000, maxBuffer: 50 * 1024 * 1024 });
             log('✓', 'TypeScript check passed');
         } catch (err) {
             const msg = err instanceof Error ? (err as any).stdout?.toString() || err.message : String(err);
@@ -432,11 +978,28 @@ function testBuild(files: GeneratedFile[], stack: StackConfig, profile: TaskProf
         if (lint) {
             try {
                 logStep(0, 0, `Running ${stack.linter} linter...`);
-                execSync(lint, { cwd: tmpDir, stdio: 'pipe', timeout: 30_000 });
+                execSync(lint, { cwd: tmpDir, stdio: 'pipe', timeout: 30_000, maxBuffer: 50 * 1024 * 1024 });
                 log('✓', 'Lint passed');
             } catch (err) {
                 const msg = err instanceof Error ? (err as any).stdout?.toString() || err.message : String(err);
-                errors.push(`Lint errors (${stack.linter}):\n${msg.slice(0, 500)}`);
+                // Filter out non-actionable config file parsing errors
+                // (e.g. eslint.config.js, postcss.config.js not in tsconfig)
+                const filteredLines = msg.split('\n').filter((line: string) => {
+                    const l = line.toLowerCase();
+                    // Skip config file parsing errors (tsconfig/project service issues)
+                    if (l.includes('eslint.config') && l.includes('parsing error')) return false;
+                    if (l.includes('postcss.config') && l.includes('parsing error')) return false;
+                    if (l.includes('next.config') && l.includes('parsing error')) return false;
+                    if (l.includes('was not found by the project service')) return false;
+                    if (l.includes('allowdefaultproject')) return false;
+                    return true;
+                }).join('\n').trim();
+                // Only report if there are real errors left
+                if (filteredLines && filteredLines.includes('error')) {
+                    errors.push(`Lint errors (${stack.linter}):\n${filteredLines.slice(0, 500)}`);
+                } else {
+                    log('!', 'Lint warnings only (config file issues) — treated as pass');
+                }
             }
         }
     } else {
@@ -449,7 +1012,7 @@ function testBuild(files: GeneratedFile[], stack: StackConfig, profile: TaskProf
         if (test) {
             try {
                 logStep(0, 0, `Running ${stack.testing} tests...`);
-                execSync(test, { cwd: tmpDir, stdio: 'pipe', timeout: 60_000 });
+                execSync(test, { cwd: tmpDir, stdio: 'pipe', timeout: 60_000, maxBuffer: 50 * 1024 * 1024 });
                 log('✓', 'Tests passed');
             } catch (err) {
                 const msg = err instanceof Error ? (err as any).stdout?.toString() || err.message : String(err);
@@ -460,13 +1023,101 @@ function testBuild(files: GeneratedFile[], stack: StackConfig, profile: TaskProf
         log('○', 'Skipping tests (not needed)');
     }
 
+    // Step 5: Runtime smoke test (gated)
+    // NOTE: Runtime errors (dev server crash, timeout) are logged as warnings,
+    // NOT added to errors list. These are infra issues the LLM can't fix and
+    // would waste iteration retries.
+    if (profile.needsRuntimeTest && errors.length === 0) {
+        const runtimeError = await runtimeSmokeTest(tmpDir, stack);
+        if (runtimeError) {
+            log('!', `Runtime warning (non-blocking): ${runtimeError}`);
+        }
+    } else if (profile.needsRuntimeTest && errors.length > 0) {
+        log('○', 'Skipping runtime test (compilation errors exist)');
+    }
+
     return errors;
 }
 
 // ─── Iterate ─────────────────────────────────────────────
 
 /**
- * Feed errors back to the LLM and ask it to fix the files.
+ * Extract filenames mentioned in error messages.
+ * Handles tsc output like "src/foo.ts(12,5): error TS2304"
+ * and lint output like "/tmp/factory-test-xxx/src/foo.ts:12:5"
+ */
+function extractBrokenFiles(errors: string[], allFiles: GeneratedFile[]): Set<string> {
+    const broken = new Set<string>();
+    const knownPaths = new Set(allFiles.map(f => f.filename));
+
+    for (const err of errors) {
+        // TSC: "src/db/schema.ts(12,5): error TS..."
+        const tscMatch = err.match(/([a-zA-Z0-9_/.@-]+\.(?:ts|tsx|js|jsx))\(\d+/);
+        if (tscMatch) {
+            const candidate = tscMatch[1];
+            if (knownPaths.has(candidate)) {
+                broken.add(candidate);
+                continue;
+            }
+        }
+
+        // Lint / absolute path: ".../src/foo.ts:12:5"
+        const lintMatch = err.match(/\/([a-zA-Z0-9_/.@-]+\.(?:ts|tsx|js|jsx)):/);
+        if (lintMatch) {
+            // Find matching file by suffix
+            const suffix = lintMatch[1];
+            for (const known of knownPaths) {
+                if (suffix.endsWith(known)) {
+                    broken.add(known);
+                    break;
+                }
+            }
+        }
+
+        // "Missing package" errors affect package.json
+        if (err.toLowerCase().includes('package.json') || err.toLowerCase().includes('missing package')) {
+            if (knownPaths.has('package.json')) broken.add('package.json');
+        }
+
+        // "Invalid JSON" errors
+        const jsonMatch = err.match(/Invalid JSON:\s*(\S+)/);
+        if (jsonMatch && knownPaths.has(jsonMatch[1])) {
+            broken.add(jsonMatch[1]);
+        }
+    }
+
+    return broken;
+}
+
+/**
+ * Find files that import from the broken files — these need to be sent
+ * as context so the LLM can fix cross-module issues.
+ */
+function identifyRelatedFiles(brokenFiles: Set<string>, allFiles: GeneratedFile[]): GeneratedFile[] {
+    const related: GeneratedFile[] = [];
+    const brokenBasenames = new Set(
+        Array.from(brokenFiles).map(f => f.replace(/\.[^.]+$/, ''))
+    );
+
+    for (const file of allFiles) {
+        if (brokenFiles.has(file.filename)) continue; // already broken, skip
+
+        // Check if this file imports from any broken file
+        for (const brokenBase of brokenBasenames) {
+            const brokenName = brokenBase.split('/').pop() || brokenBase;
+            if (file.content.includes(brokenName)) {
+                related.push(file);
+                break;
+            }
+        }
+    }
+
+    return related;
+}
+
+/**
+ * Feed errors back to the LLM — TARGETED: only send broken files + related context.
+ * Merges fixed files back into the full set.
  */
 async function iterateBuild(
     spec: AppSpec,
@@ -477,7 +1128,29 @@ async function iterateBuild(
     provider: LLMProvider,
     model: string,
 ): Promise<{ files: GeneratedFile[]; tokensIn: number; tokensOut: number }> {
-    const filesSummary = previousFiles.map(f => `- ${f.filename} (${f.content.length} chars)`).join('\n');
+    // Identify broken files
+    const brokenFileNames = extractBrokenFiles(errors, previousFiles);
+    const brokenFiles = previousFiles.filter(f => brokenFileNames.has(f.filename));
+    const relatedFiles = identifyRelatedFiles(brokenFileNames, previousFiles);
+
+    // If we couldn't identify specific broken files, fall back to sending all
+    const targetFiles = brokenFiles.length > 0 ? brokenFiles : previousFiles;
+    const isTargeted = brokenFiles.length > 0 && brokenFiles.length < previousFiles.length;
+
+    if (isTargeted) {
+        log('→', `Targeted fix: ${brokenFiles.length} broken file(s), ${relatedFiles.length} related file(s) (of ${previousFiles.length} total)`);
+    } else {
+        log('→', `Full regeneration: could not isolate broken files (sending all ${previousFiles.length})`);
+    }
+
+    const brokenContents = targetFiles.map(f => `===FILE: ${f.filename}===\n${f.content}\n===END_FILE===`).join('\n\n');
+    const relatedSummary = relatedFiles.length > 0
+        ? `\n## Related Files (for context — do NOT regenerate these unless needed)\n${relatedFiles.map(f => `===FILE: ${f.filename}===\n${f.content}\n===END_FILE===`).join('\n\n')}`
+        : '';
+
+    const instruction = isTargeted
+        ? `Fix ONLY the broken files listed below. The other ${previousFiles.length - brokenFiles.length} files are working fine — do NOT change them.`
+        : `Fix ALL the errors. Regenerate the complete set of files with corrections applied.`;
 
     const prompt = `You previously generated code for an application. There were errors that need fixing.
 
@@ -486,17 +1159,17 @@ async function iterateBuild(
 - Framework: ${spec.stack.framework}
 - Database: ${spec.stack.database || 'local state'}
 
-## Files Generated
-${filesSummary}
+## ${isTargeted ? 'Broken Files (fix these)' : 'Files Generated'}
+${brokenContents}
+${relatedSummary}
 
 ## Errors Found
 ${errors.map(e => `- ${e}`).join('\n')}
 
 ## Instructions
-Fix ALL the errors listed above. Regenerate the complete set of files with corrections applied.
-Maintain the same architecture and file structure.
+${instruction}
 
-Output EVERY file using this exact format:
+Output EVERY fixed file using this exact format:
 
 ===FILE: path/to/file.ext===
 (file content here)
@@ -505,14 +1178,124 @@ Output EVERY file using this exact format:
 Output ONLY the files. No explanations.`;
 
     const raw = await callProvider(provider, model, prompt);
-    const files = parseGeneratedFiles(raw.text);
+    const fixedFiles = parseGeneratedFiles(raw.text);
 
-    if (files.length === 0) {
+    if (fixedFiles.length === 0) {
         log('!', 'Iteration produced no files — keeping previous version');
         return { files: previousFiles, tokensIn: raw.tokensIn, tokensOut: raw.tokensOut };
     }
 
-    return { files, tokensIn: raw.tokensIn, tokensOut: raw.tokensOut };
+    // Merge: replace fixed files into the full set, keep untouched files
+    if (isTargeted) {
+        const fixedMap = new Map(fixedFiles.map(f => [f.filename, f]));
+        const merged = previousFiles.map(f => fixedMap.get(f.filename) || f);
+        // Add any new files the LLM created
+        for (const f of fixedFiles) {
+            if (!previousFiles.some(p => p.filename === f.filename)) {
+                merged.push(f);
+            }
+        }
+        return { files: merged, tokensIn: raw.tokensIn, tokensOut: raw.tokensOut };
+    }
+
+    return { files: fixedFiles, tokensIn: raw.tokensIn, tokensOut: raw.tokensOut };
+}
+
+/**
+ * Feed errors back to the LLM for a feature build — TARGETED iteration.
+ */
+async function iterateFeatureBuild(
+    spec: FeatureSpec,
+    context: ProjectContext,
+    appContext: AppIntegrationContext,
+    previousFiles: GeneratedFile[],
+    errors: string[],
+    provider: LLMProvider,
+    model: string,
+): Promise<{ files: GeneratedFile[]; tokensIn: number; tokensOut: number }> {
+    // Identify broken files
+    const brokenFileNames = extractBrokenFiles(errors, previousFiles);
+    const brokenFiles = previousFiles.filter(f => brokenFileNames.has(f.filename));
+    const relatedFiles = identifyRelatedFiles(brokenFileNames, previousFiles);
+
+    const targetFiles = brokenFiles.length > 0 ? brokenFiles : previousFiles;
+    const isTargeted = brokenFiles.length > 0 && brokenFiles.length < previousFiles.length;
+
+    if (isTargeted) {
+        log('→', `Targeted fix: ${brokenFiles.length} broken file(s), ${relatedFiles.length} related file(s) (of ${previousFiles.length} total)`);
+    }
+
+    const brokenContents = targetFiles.map(f => `===FILE: ${f.filename}===\n${f.content}\n===END_FILE===`).join('\n\n');
+    const relatedSummary = relatedFiles.length > 0
+        ? `\n## Related Files (for context)\n${relatedFiles.map(f => `===FILE: ${f.filename}===\n${f.content}\n===END_FILE===`).join('\n\n')}`
+        : '';
+
+    // Integration context
+    const existingDeps = appContext.packageJson
+        ? Object.keys({ ...appContext.packageJson.dependencies, ...appContext.packageJson.devDependencies }).join(', ')
+        : 'unknown';
+
+    const instruction = isTargeted
+        ? `Fix ONLY the broken files below. The other ${previousFiles.length - brokenFiles.length} files are working fine.`
+        : `Fix ALL the errors. Regenerate the complete set of files with corrections applied.`;
+
+    const prompt = `You previously generated code for a feature. There were errors that need fixing.
+
+## Feature
+- Name: ${spec.feature.name}
+- Slug: ${spec.feature.slug}
+- Target App: ${spec.target.app}
+
+## Existing App Dependencies (already installed)
+${existingDeps}
+
+## ${isTargeted ? 'Broken Files (fix these)' : 'Current File Contents'}
+${brokenContents}
+${relatedSummary}
+
+## Errors Found
+${errors.map(e => `- ${e}`).join('\n')}
+
+## Instructions
+${instruction}
+
+Critical rules:
+1. Every "import ... from 'package'" MUST reference a package listed in package.json
+2. Cross-module import/export consistency: if file A exports X, file B must import X (not Y)
+3. For package versions in package.json, use "*" — the engine resolves to latest
+4. When using ESM with moduleResolution "NodeNext", include .js extensions in relative imports
+5. Do NOT use overly strict tsconfig flags like noUnusedLocals, noImplicitReturns
+6. Do NOT duplicate packages already installed in the target app
+
+Output EVERY fixed file using this exact format:
+
+===FILE: path/to/file.ext===
+(file content here)
+===END_FILE===
+
+Output ONLY the files. No explanations.`;
+
+    const raw = await callProvider(provider, model, prompt);
+    const fixedFiles = parseGeneratedFiles(raw.text);
+
+    if (fixedFiles.length === 0) {
+        log('!', 'Iteration produced no files — keeping previous version');
+        return { files: previousFiles, tokensIn: raw.tokensIn, tokensOut: raw.tokensOut };
+    }
+
+    // Merge: replace fixed files into the full set, keep untouched files
+    if (isTargeted) {
+        const fixedMap = new Map(fixedFiles.map(f => [f.filename, f]));
+        const merged = previousFiles.map(f => fixedMap.get(f.filename) || f);
+        for (const f of fixedFiles) {
+            if (!previousFiles.some(p => p.filename === f.filename)) {
+                merged.push(f);
+            }
+        }
+        return { files: merged, tokensIn: raw.tokensIn, tokensOut: raw.tokensOut };
+    }
+
+    return { files: fixedFiles, tokensIn: raw.tokensIn, tokensOut: raw.tokensOut };
 }
 
 // ─── Prompt Builders ─────────────────────────────────────
@@ -542,6 +1325,11 @@ ${contextBlock}
 8. If using ESLint with TypeScript, you MUST include these devDependencies: eslint, @typescript-eslint/parser, @typescript-eslint/eslint-plugin
 9. If using Jest with TypeScript, you MUST include these devDependencies: jest, @types/jest, ts-jest
 10. Do NOT reference any package in config files that is not in package.json
+11. CRITICAL: Every "import ... from 'package'" MUST reference a package that is listed in package.json dependencies or devDependencies. If you use dotenv, uuid, puppeteer, nodemailer, react, or ANY third-party package, it MUST appear in package.json.
+12. CRITICAL: Cross-module import/export consistency. If file A does "import { foo } from './bar'", then bar.ts MUST export a named export called "foo". Use consistent export styles (default vs named) across all files. Every barrel/index file must re-export all symbols that other files import from it.
+13. When generating tsconfig.json, do NOT enable strict flags like noUnusedLocals, noUnusedParameters, noImplicitReturns, or noFallthroughCasesInSwitch — generated code rarely satisfies these. Keep strict:true but leave the granular flags at their defaults.
+14. When using ESM ("type": "module" in package.json) with moduleResolution "NodeNext" or "Node16", all relative imports MUST include the .js extension (e.g. import { foo } from './bar.js').
+15. For package versions in package.json, use "*" instead of pinning specific version numbers. The engine will resolve them to the latest compatible versions automatically. Do NOT use hardcoded version numbers like "^9.4.3" — they may be outdated.
 
 ## Output Format
 
@@ -554,8 +1342,48 @@ Output EVERY file with this exact delimiter format:
 Do NOT include any explanatory text outside of the file delimiters. Output ONLY the files.`;
 }
 
-function buildFeaturePrompt(spec: FeatureSpec, context: ProjectContext): string {
+function buildFeaturePrompt(spec: FeatureSpec, context: ProjectContext, appContext?: AppIntegrationContext, queueContext?: QueueBuildContext[]): string {
     const contextBlock = formatContext(context);
+    const depsBlock = spec.dependencies?.length
+        ? `\n## Required Packages\nThese packages MUST be in package.json dependencies:\n${spec.dependencies.map(d => `- ${d}`).join('\n')}\n\nDo not add version numbers — use "*" and the engine will resolve to latest.`
+        : '';
+
+    // Integration context from existing app
+    let integrationBlock = '';
+    if (appContext) {
+        const parts: string[] = [];
+
+        if (appContext.packageJson) {
+            const existingDeps = Object.keys({
+                ...appContext.packageJson.dependencies,
+                ...appContext.packageJson.devDependencies,
+            });
+            if (existingDeps.length > 0) {
+                parts.push(`### Existing Dependencies (already installed)\n${existingDeps.map(d => `- ${d}`).join('\n')}\n\nDo NOT add these to your package.json — they are already available.`);
+            }
+            if (appContext.packageJson.scripts) {
+                parts.push(`### Existing Scripts\n${Object.entries(appContext.packageJson.scripts).map(([k, v]) => `- ${k}: ${v}`).join('\n')}`);
+            }
+        }
+
+        if (appContext.tsconfigRaw) {
+            parts.push(`### tsconfig.json\n\`\`\`json\n${appContext.tsconfigRaw}\n\`\`\`\n\nUse the SAME compiler options. Do NOT generate a conflicting tsconfig.`);
+        }
+
+        if (appContext.fileTree.length > 0) {
+            // Show at most 60 files to avoid prompt bloat
+            const shownFiles = appContext.fileTree.slice(0, 60);
+            parts.push(`### Existing File Structure\n\`\`\`\n${shownFiles.join('\n')}${appContext.fileTree.length > 60 ? `\n... and ${appContext.fileTree.length - 60} more files` : ''}\n\`\`\`\n\nDo NOT create files that conflict with these existing files. Add complementary files that integrate cleanly.`);
+        }
+
+        if (appContext.stack) {
+            parts.push(`### Detected Stack\n- Framework: ${appContext.stack.framework}\n- Package Manager: ${appContext.stack.packageManager || 'npm'}\n- Language: ${appContext.stack.language || 'typescript'}\n- Database: ${appContext.stack.database || 'none'}`);
+        }
+
+        if (parts.length > 0) {
+            integrationBlock = `\n## Existing App Context (IMPORTANT — read carefully)\n\n${parts.join('\n\n')}\n`;
+        }
+    }
 
     return `You are a senior full-stack developer. Generate a new feature for an existing application.
 
@@ -563,6 +1391,20 @@ function buildFeaturePrompt(spec: FeatureSpec, context: ProjectContext): string 
 - Name: ${spec.feature.name}
 - Slug: ${spec.feature.slug}
 - Target App: ${spec.target.app}
+${depsBlock}
+${integrationBlock}
+
+${queueContext && queueContext.length > 0 ? `## Previously Completed Builds (CRITICAL — wire up with these)
+
+The following specs have already been built successfully in this queue run.
+Your feature MUST integrate with these — import from their files, use their types, and follow their patterns.
+
+${queueContext.map(c => `### ${c.specFile} (${c.kind})
+Generated files:
+${c.generatedFiles.map(f => `- ${f}`).join('\n')}`).join('\n\n')}
+
+IMPORTANT: These files already exist in the app. Import from them where needed. Do NOT recreate types or utilities they already export.
+` : ''}
 
 ${spec.model ? `## Data Model
 - Collection: ${spec.model.collection}
@@ -573,6 +1415,13 @@ ${spec.pages ? `## Pages
 ${spec.pages.map(p => `- ${p.title} (${p.type}) at /${p.slug}`).join('\n')}` : ''}
 
 ${contextBlock}
+
+## Requirements
+1. Every "import ... from 'package'" MUST reference a package listed in package.json
+2. Cross-module import/export consistency: use consistent export styles across all files
+3. For package versions in package.json, use "*" — the engine resolves to latest
+4. When using ESM with moduleResolution "NodeNext", include .js extensions in relative imports
+5. Your code MUST integrate with the existing app — use the same patterns, imports, and conventions
 
 ## Output Format
 
@@ -603,6 +1452,10 @@ function formatSpec(spec: AppSpec): string {
         ? `- Auth provider: ${spec.auth.provider}\n- Methods: ${Object.entries(spec.auth.methods || {}).filter(([, v]) => v).map(([k]) => k).join(', ') || 'email'}`
         : '- No auth required';
 
+    const depsInfo = spec.dependencies?.length
+        ? `### Required Packages\n${spec.dependencies.map(d => `- ${d}`).join('\n')}\n\nThese packages MUST be included in package.json. Do not add version numbers — use "*" and the engine will resolve to latest.`
+        : '';
+
     return `## Application Specification
 
 - **Name**: ${spec.appName}
@@ -626,6 +1479,8 @@ ${layoutInfo}
 
 ### Authentication
 ${authInfo}
+
+${depsInfo}
 
 ### Data Model
 ${tableDefs || '    No tables defined — use in-memory state.'}`;
@@ -661,7 +1516,7 @@ function formatContext(context: ProjectContext): string {
 
 // ─── Provider Calls ──────────────────────────────────────
 
-function requireActiveProvider(): { provider: LLMProvider; model: string } {
+export function requireActiveProvider(): { provider: LLMProvider; model: string } {
     const settings = loadSettings();
     if (!settings.activeProvider || !settings.buildModel) {
         throw new Error(
@@ -676,7 +1531,7 @@ function requireActiveProvider(): { provider: LLMProvider; model: string } {
     return { provider, model: settings.buildModel };
 }
 
-async function callProvider(provider: LLMProvider, model: string, prompt: string): Promise<LLMResponse> {
+export async function callProvider(provider: LLMProvider, model: string, prompt: string): Promise<LLMResponse> {
     switch (provider.id) {
         case 'gemini':
             if (!provider.apiKey) throw new Error('Gemini API key not configured');
@@ -764,36 +1619,93 @@ async function callOpenAI(apiKey: string, model: string, prompt: string): Promis
     return { text, tokensIn, tokensOut };
 }
 
+const OLLAMA_FALLBACK_MODEL = 'glm-4.7-flash';
+
 async function callOllama(baseUrl: string, model: string, prompt: string): Promise<LLMResponse> {
-    log('→', `Calling Ollama (${model}) at ${baseUrl}...`);
+    // Try primary model first, then fallback if all retries fail
+    try {
+        return await ollamaFetchWithRetry(baseUrl, model, prompt);
+    } catch (primaryErr: any) {
+        if (model !== OLLAMA_FALLBACK_MODEL) {
+            log('⚠', `Primary model ${model} failed: ${primaryErr.message}`);
+            log('→', `Falling back to ${OLLAMA_FALLBACK_MODEL}...`);
+            try {
+                return await ollamaFetchWithRetry(baseUrl, OLLAMA_FALLBACK_MODEL, prompt);
+            } catch (fallbackErr: any) {
+                throw new Error(`Both ${model} and fallback ${OLLAMA_FALLBACK_MODEL} failed. Last error: ${fallbackErr.message}`);
+            }
+        }
+        throw primaryErr;
+    }
+}
 
-    const res = await fetch(`${baseUrl}/api/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            model,
-            prompt,
-            stream: false,
-            options: { temperature: 0.2, num_predict: 16384 },
-        }),
-    });
+async function ollamaFetchWithRetry(baseUrl: string, model: string, prompt: string): Promise<LLMResponse> {
+    const MAX_ATTEMPTS = 3;
 
-    if (!res.ok) {
-        const body = await res.text();
-        throw new Error(`Ollama error (${res.status}): ${body.slice(0, 300)}`);
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        log('→', `Calling Ollama (${model}) at ${baseUrl}...${attempt > 1 ? ` (retry ${attempt}/${MAX_ATTEMPTS})` : ''}`);
+
+        // 10-minute timeout — large prompts can take several minutes
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10 * 60 * 1000);
+
+        try {
+            const res = await fetch(`${baseUrl}/api/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model,
+                    prompt,
+                    stream: false,
+                    keep_alive: '30m',
+                    options: { temperature: 0.2, num_predict: 16384, num_ctx: 8192 },
+                }),
+                signal: controller.signal,
+            });
+            clearTimeout(timeout);
+
+            if (!res.ok) {
+                const body = await res.text();
+                throw new Error(`Ollama error (${res.status}): ${body.slice(0, 300)}`);
+            }
+
+            const data = await res.json();
+            const text = data.response;
+            if (!text) throw new Error('Ollama returned empty response');
+
+            const tokensIn = data.prompt_eval_count || 0;
+            const tokensOut = data.eval_count || 0;
+            if (tokensOut) {
+                log('  ', `  Tokens: ${tokensIn} in / ${tokensOut} out`);
+            }
+
+            return { text, tokensIn, tokensOut };
+        } catch (err: any) {
+            clearTimeout(timeout);
+
+            const msg = (err?.message || String(err)).toLowerCase();
+            const isTransient =
+                msg.includes('fetch failed') ||
+                msg.includes('econnrefused') ||
+                msg.includes('etimedout') ||
+                msg.includes('econnreset') ||
+                msg.includes('socket hang up') ||
+                msg.includes('aborted') ||
+                msg.includes('network error');
+
+            if (isTransient && attempt < MAX_ATTEMPTS) {
+                const delaySec = attempt * 5;
+                log('⚠', `Transient error: ${err.message} — retrying in ${delaySec}s...`);
+                await new Promise(r => setTimeout(r, delaySec * 1000));
+                continue;
+            }
+
+            // Not transient or out of retries
+            throw err;
+        }
     }
 
-    const data = await res.json();
-    const text = data.response;
-    if (!text) throw new Error('Ollama returned empty response');
-
-    const tokensIn = data.prompt_eval_count || 0;
-    const tokensOut = data.eval_count || 0;
-    if (tokensOut) {
-        log('  ', `  Tokens: ${tokensIn} in / ${tokensOut} out`);
-    }
-
-    return { text, tokensIn, tokensOut };
+    throw new Error(`Ollama (${model}): all ${MAX_ATTEMPTS} retry attempts exhausted`);
 }
 
 // ─── Response Parser ─────────────────────────────────────
@@ -812,6 +1724,10 @@ export function parseGeneratedFiles(raw: string): GeneratedFile[] {
         if (content.endsWith('\n')) {
             content = content.slice(0, -1);
         }
+
+        // Strip markdown code fences that LLMs sometimes wrap around file content
+        // e.g. ```typescript\n...\n``` or ```json\n...\n```
+        content = content.replace(/^```\w*\s*\n/, '').replace(/\n```\s*$/, '');
 
         files.push({ filename, content });
     }

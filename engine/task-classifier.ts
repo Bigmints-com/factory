@@ -44,6 +44,7 @@ export function classifyTask(spec: AppSpec): TaskProfile {
                 needsTypeCheck: false,
                 needsLint: false,
                 needsTest: false,
+                needsRuntimeTest: false,
                 maxIterations: 0,
             };
         } else {
@@ -54,6 +55,7 @@ export function classifyTask(spec: AppSpec): TaskProfile {
                 needsTypeCheck: false,
                 needsLint: false,
                 needsTest: false,
+                needsRuntimeTest: false,
                 maxIterations: 0,
             };
         }
@@ -66,7 +68,8 @@ export function classifyTask(spec: AppSpec): TaskProfile {
             needsTypeCheck: isTypeScript,
             needsLint: hasLinter,
             needsTest: true,
-            maxIterations: 3,
+            needsRuntimeTest: true,
+            maxIterations: 5,
         };
     } else if (hasLinter || hasTesting) {
         // Frontend app: framework + linter/testing but no heavy backend
@@ -77,7 +80,8 @@ export function classifyTask(spec: AppSpec): TaskProfile {
             needsTypeCheck: isTypeScript,
             needsLint: hasLinter,
             needsTest: hasTesting,
-            maxIterations: 2,
+            needsRuntimeTest: true,
+            maxIterations: 4,
         };
     } else {
         // Scaffold: just framework, no linter/testing
@@ -88,7 +92,8 @@ export function classifyTask(spec: AppSpec): TaskProfile {
             needsTypeCheck: false,
             needsLint: false,
             needsTest: false,
-            maxIterations: 1,
+            needsRuntimeTest: false,
+            maxIterations: 2,
         };
     }
 
@@ -100,6 +105,30 @@ export function classifyTask(spec: AppSpec): TaskProfile {
         profile.needsTest ? 'test ✓' : 'test ✗',
     ].join(', ');
     log('●', `Task type: ${profile.type} (${flags})`);
+
+    return profile;
+}
+
+/**
+ * Return a strict task profile for feature builds.
+ * Features always get full validation — install, typecheck, lint, and iteration.
+ */
+export function classifyFeatureTask(): TaskProfile {
+    const profile: TaskProfile = {
+        type: 'full-app',
+        needsPlan: false,          // Feature specs already have enough detail
+        needsInstall: true,
+        needsTypeCheck: true,
+        needsLint: true,
+        needsTest: false,          // Features usually can't run tests in isolation
+        needsRuntimeTest: true,
+        maxIterations: 5,
+    };
+
+    const flags = [
+        'install ✓', 'tsc ✓', 'lint ✓', 'test ✗',
+    ].join(', ');
+    log('●', `Feature task profile: ${profile.type} (${flags})`);
 
     return profile;
 }

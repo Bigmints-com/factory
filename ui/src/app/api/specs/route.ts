@@ -5,11 +5,24 @@
  * Falls back to the factory's own specs/ directory if no project is active.
  */
 import { NextResponse } from 'next/server';
-import { readdirSync, readFileSync, existsSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 
 const FACTORY_ROOT = resolve(process.cwd(), '..');
+
+/**
+ * Auto-fix common YAML issues before parsing.
+ * - Quotes unquoted @-scoped package names (e.g. `- @types/cheerio` → `- "@types/cheerio"`)
+ * Returns the sanitized string and whether any fixes were applied.
+ */
+function sanitizeYaml(raw: string): { content: string; fixed: boolean } {
+  // Match lines like `  - @scope/package` (unquoted @ at start of a list value)
+  const fixed = raw.replace(/^(\s*-\s+)(@\S+)\s*$/gm, (_, indent, pkg) => {
+    return `${indent}"${pkg}"`;
+  });
+  return { content: fixed, fixed: fixed !== raw };
+}
 
 /**
  * Resolve the specs directories — active project's .factory/specs/.
@@ -53,7 +66,11 @@ export async function GET() {
       specs = appFiles.map((file) => {
         try {
           const raw = readFileSync(join(APPS_DIR, file), 'utf-8');
-          const parsed = parseYaml(raw);
+          const { content: sanitized, fixed } = sanitizeYaml(raw);
+          if (fixed) {
+            try { writeFileSync(join(APPS_DIR, file), sanitized, 'utf-8'); } catch { /* ignore write errors */ }
+          }
+          const parsed = parseYaml(sanitized);
           return {
             file,
             kind: 'AppSpec' as const,
@@ -81,7 +98,11 @@ export async function GET() {
       featureSpecs = featureFiles.map((file) => {
         try {
           const raw = readFileSync(join(FEATURES_DIR, file), 'utf-8');
-          const parsed = parseYaml(raw);
+          const { content: sanitized, fixed } = sanitizeYaml(raw);
+          if (fixed) {
+            try { writeFileSync(join(FEATURES_DIR, file), sanitized, 'utf-8'); } catch { /* ignore write errors */ }
+          }
+          const parsed = parseYaml(sanitized);
           return {
             file: `features/${file}`,
             kind: 'FeatureSpec' as const,
@@ -141,7 +162,7 @@ export async function POST(request: Request) {
 
 
     // Ensure directory exists
-    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const { mkdirSync } = await import('node:fs');
     mkdirSync(targetDir, { recursive: true });
 
     const filePath = join(targetDir, filename);

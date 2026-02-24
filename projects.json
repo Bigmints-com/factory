@@ -26,6 +26,18 @@
         "linter": "EsLint + Prettier",
         "testing": "jest"
       }
+    },
+    {
+      "id": "xbot",
+      "name": "xbot",
+      "path": "/Users/pretheesh/Projects/xbot",
+      "addedAt": "2026-02-18T08:48:19.968Z",
+      "stack": {
+        "framework": "next.js",
+        "packageManager": "npm",
+        "linter": "EsLint + Prettier",
+        "testing": "jest"
+      }
     }
   ]
 }

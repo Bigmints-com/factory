@@ -8,12 +8,13 @@
 
 import { NextResponse } from 'next/server';
 import { resolve, join } from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import Database from 'better-sqlite3';
 
 const DB_PATH = resolve(process.cwd(), '..', 'factory.db');
 const FACTORY_ROOT = resolve(process.cwd(), '..');
+const LOG_FILE = resolve(process.cwd(), '..', 'factory-build.log');
 
 function getDb() {
   const db = new Database(DB_PATH);
@@ -69,13 +70,17 @@ function resolveSpecPath(specFile: string, kind: string): string {
 /**
  * Process queue items sequentially in the background.
  * This function runs detached from the HTTP request.
+ * Retries for transient LLM errors happen inside the CLI build process itself.
+ *
+ * Dependency cascade: if an item's dependencies (app spec or explicit depends_on)
+ * have failed or been blocked, this item is auto-blocked. No wasted LLM tokens.
  */
 function processQueueInBackground() {
   const db = getDb();
 
   const pending = db.prepare(`
     SELECT * FROM queue_items WHERE status = 'pending'
-    ORDER BY priority DESC, added_at ASC
+    ORDER BY phase ASC, priority DESC, added_at ASC
   `).all() as any[];
 
   if (pending.length === 0) {
@@ -87,17 +92,159 @@ function processQueueInBackground() {
   // Process items one at a time, chaining via callbacks
   let index = 0;
 
+  /** Extract real error messages from CLI output (✗ lines contain actual failures) */
+  function extractRealError(stdout: string, stderr: string, code: number | null): string {
+    const failLines = stdout.split('\n')
+      .filter((l: string) => l.includes('✗'))
+      .map((l: string) => stripAnsi(l).replace(/^.*✗\s*/, '').trim())
+      .filter(Boolean);
+
+    if (failLines.length > 0) return failLines.join('; ');
+
+    // Fall back to stderr, but strip useless npm warnings
+    const cleanStderr = stderr
+      .split('\n')
+      .filter((l: string) => !l.startsWith('npm warn'))
+      .join('\n')
+      .trim();
+
+    return cleanStderr || `Process exited with code ${code}`;
+  }
+
+  /**
+   * Check if an item should be blocked because its dependencies failed.
+   * Returns the reason string if blocked, or null if OK to proceed.
+   */
+  function checkDependencyBlock(item: any): string | null {
+    const checkDb = getDb();
+    try {
+      // 1. For FeatureSpecs: implicit dependency on the app spec
+      if (item.kind === 'FeatureSpec' && item.target_app) {
+        // Find the app spec for this target_app
+        // App specs are identified by kind='AppSpec' — check if any matching one failed/blocked
+        const appItems = checkDb.prepare(`
+          SELECT id, status, spec_file FROM queue_items
+          WHERE kind = 'AppSpec'
+          ORDER BY added_at ASC
+        `).all() as { id: string; status: string; spec_file: string }[];
+
+        // Check if ANY app spec in the queue has failed or is blocked
+        // (For the target app specifically — match by slug in spec_file)
+        const matchingApp = appItems.find(a => {
+          const slug = a.spec_file.replace(/\.ya?ml$/, '').replace(/^apps\//, '');
+          return slug === item.target_app;
+        });
+
+        if (matchingApp) {
+          if (matchingApp.status === 'failed' || matchingApp.status === 'blocked') {
+            return `App spec "${matchingApp.spec_file}" ${matchingApp.status}. Cannot build feature on a broken app.`;
+          }
+          if (matchingApp.status === 'pending' || matchingApp.status === 'running') {
+            // This shouldn't happen due to phase ordering, but safety check
+            return `App spec "${matchingApp.spec_file}" has not completed yet.`;
+          }
+        }
+      }
+
+      // 2. Explicit depends_on check
+      let dependsOn: string[] = [];
+      try { dependsOn = JSON.parse(item.depends_on || '[]'); } catch {}
+
+      if (dependsOn.length > 0) {
+        for (const dep of dependsOn) {
+          // dep is a slug — find matching queue item
+          const depItem = checkDb.prepare(`
+            SELECT id, status, spec_file FROM queue_items
+            WHERE spec_file LIKE ?
+            ORDER BY added_at DESC LIMIT 1
+          `).get(`%${dep}%`) as { id: string; status: string; spec_file: string } | undefined;
+
+          if (depItem && (depItem.status === 'failed' || depItem.status === 'blocked')) {
+            return `Dependency "${dep}" (${depItem.spec_file}) ${depItem.status}. Cannot proceed.`;
+          }
+        }
+      }
+
+      return null; // All deps OK
+    } finally {
+      checkDb.close();
+    }
+  }
+
+  /**
+   * Write queue context for feature builds — what has been completed so far.
+   * This lets the LLM wire things up with previously built features.
+   */
+  function writeQueueContext(item: any) {
+    if (item.kind !== 'FeatureSpec') return;
+
+    const ctxDb = getDb();
+    try {
+      // Get all completed items for context
+      const completed = ctxDb.prepare(`
+        SELECT spec_file, kind, output, target_app FROM queue_items
+        WHERE status = 'completed'
+        ORDER BY completed_at ASC
+      `).all() as { spec_file: string; kind: string; output: string; target_app: string }[];
+
+      if (completed.length === 0) return;
+
+      // Extract file lists from build output (they appear as "Generated N files" sections)
+      const context = completed.map(c => {
+        // Extract generated file paths from output
+        const fileMatches = c.output?.match(/(?:src\/|lib\/|app\/|pages\/|components\/)[\w/.-]+\.(?:ts|tsx|js|jsx|json|css)/g) || [];
+        return {
+          specFile: c.spec_file,
+          kind: c.kind,
+          targetApp: c.target_app,
+          generatedFiles: [...new Set(fileMatches)].slice(0, 50),
+        };
+      });
+
+      const contextPath = join(FACTORY_ROOT, 'queue-context.json');
+      writeFileSync(contextPath, JSON.stringify({ completedBuilds: context }, null, 2));
+    } catch { /* non-critical */ }
+    finally { ctxDb.close(); }
+  }
+
   function processNext() {
     if (index >= pending.length) {
-      // All done — mark queue as not running
+      // All done — mark queue as not running & clean up context file
       const finDb = getDb();
       finDb.prepare(`UPDATE queue_state SET value = 'false' WHERE key = 'is_running'`).run();
       finDb.close();
+      // Clean up queue context file
+      try {
+        const ctxPath = join(FACTORY_ROOT, 'queue-context.json');
+        if (existsSync(ctxPath)) {
+          writeFileSync(ctxPath, '{}');
+        }
+      } catch {}
       return;
     }
 
     const item = pending[index];
     index++;
+
+    // ── Dependency cascade check ──
+    const blockReason = checkDependencyBlock(item);
+    if (blockReason) {
+      const blockDb = getDb();
+      blockDb.prepare(`
+        UPDATE queue_items
+        SET status = 'blocked', error = ?, completed_at = ?
+        WHERE id = ?
+      `).run(blockReason, new Date().toISOString(), item.id);
+      blockDb.close();
+
+      // Log to build log
+      try {
+        appendFileSync(LOG_FILE, `\n[blocked] ${item.spec_file}: ${blockReason}\n`);
+      } catch {}
+
+      processNext(); // Skip to next item
+      return;
+    }
 
     const startTime = Date.now();
 
@@ -106,6 +253,12 @@ function processQueueInBackground() {
     runDb.prepare(`UPDATE queue_items SET status = 'running', started_at = ? WHERE id = ?`)
       .run(new Date().toISOString(), item.id);
     runDb.close();
+
+    // Clear live log file and write header
+    writeFileSync(LOG_FILE, `[build] ${item.spec_file} (${item.kind})\n`);
+
+    // Write queue context for feature builds (what's been completed so far)
+    writeQueueContext(item);
 
     // Resolve the spec path
     const resolvedPath = resolveSpecPath(item.spec_file, item.kind);
@@ -126,11 +279,15 @@ function processQueueInBackground() {
     let stderr = '';
 
     child.stdout.on('data', (data: Buffer) => {
-      stdout += data.toString();
+      const chunk = data.toString();
+      stdout += chunk;
+      try { appendFileSync(LOG_FILE, chunk); } catch { /* ignore */ }
     });
 
     child.stderr.on('data', (data: Buffer) => {
-      stderr += data.toString();
+      const chunk = data.toString();
+      stderr += chunk;
+      try { appendFileSync(LOG_FILE, chunk); } catch { /* ignore */ }
     });
 
     child.on('close', (code: number | null) => {
@@ -148,20 +305,18 @@ function processQueueInBackground() {
 
         logBuild(doneDb, item, 'completed', output, durationMs);
       } else {
-        // Failed
-        const errorMsg = stderr || `Process exited with code ${code}`;
+        // Failed — extract real error from stdout ✗ lines
+        const realError = extractRealError(stdout, stderr, code);
         doneDb.prepare(`
           UPDATE queue_items
           SET status = 'failed', output = ?, error = ?, completed_at = ?, duration_ms = ?
           WHERE id = ?
-        `).run(output, stripAnsi(errorMsg), new Date().toISOString(), durationMs, item.id);
+        `).run(output, stripAnsi(realError), new Date().toISOString(), durationMs, item.id);
 
         logBuild(doneDb, item, 'failed', output, durationMs);
       }
 
       doneDb.close();
-
-      // Process next item
       processNext();
     });
 
@@ -176,8 +331,6 @@ function processQueueInBackground() {
 
       logBuild(errDb, item, 'failed', '', durationMs);
       errDb.close();
-
-      // Continue to next item
       processNext();
     });
   }
