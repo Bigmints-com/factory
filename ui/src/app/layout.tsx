@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "SaveADay Factory",
+  title: "Factory",
   description: "Autonomous app scaffolding and feature generation factory",
 };
 

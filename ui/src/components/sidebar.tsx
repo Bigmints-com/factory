@@ -54,7 +54,7 @@ export function Sidebar({ activeTab, onTabChange, onAddProject, projectRefreshKe
           <Factory className="h-4 w-4" />
         </div>
         <div>
-          <p className="text-sm font-semibold tracking-tight">SaveADay</p>
+          <p className="text-sm font-semibold tracking-tight">Factory</p>
           <p className="text-[11px] text-muted-foreground">Factory</p>
         </div>
       </div>
@@ -101,7 +101,7 @@ export function Sidebar({ activeTab, onTabChange, onAddProject, projectRefreshKe
       {/* Footer */}
       <div className="border-t border-border px-5 py-3">
         <p className="text-[11px] text-muted-foreground">
-          saveaday-factory v1.0.0
+          factory v1.0.0
         </p>
       </div>
     </aside>

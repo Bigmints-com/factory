@@ -59,7 +59,7 @@ export function SpecCard({ spec, onValidate, onBuild, onEnqueue, onView, isValid
             <span className="text-2xl">{meta?.icon || '📦'}</span>
             <div>
               <h3 className="text-base font-semibold tracking-tight">{meta?.name || spec.file}</h3>
-              <p className="text-xs text-muted-foreground font-mono">@saveaday/{meta?.slug}</p>
+              <p className="text-xs text-muted-foreground font-mono">@factory/{meta?.slug}</p>
             </div>
           </div>
           <StatusBadge status={spec.status} />

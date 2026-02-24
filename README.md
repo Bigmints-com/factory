@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">🏭 SaveADay Factory</h1>
+  <h1 align="center">🏭 Factory</h1>
   <p align="center">
     <strong>Autonomous app scaffolding from YAML specs — plan, build, test, fix, push.</strong>
   </p>
@@ -44,7 +44,7 @@ Write a spec. Queue it up. Go to sleep. Wake up to working code.
 ### Install
 
 ```bash
-git clone https://github.com/saveaday/factory.git
+git clone https://github.com/factory/factory.git
 cd factory
 npm install
 ```
@@ -302,4 +302,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, project structure,
 
 ## License
 
-[MIT](LICENSE) © SaveADay
+[MIT](LICENSE) © Factory

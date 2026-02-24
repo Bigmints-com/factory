@@ -36,7 +36,7 @@ function getActiveBridgeConfig(): { stack?: Record<string, string> } | null {
   }
 }
 
-const SYSTEM_PROMPT_NEW_APP = `You are an expert software architect for SaveADay Factory.
+const SYSTEM_PROMPT_NEW_APP = `You are an expert software architect for Factory.
 Your task is to DECOMPOSE user requirements into modular, buildable specs.
 
 When the user describes an application, you MUST output:
@@ -135,7 +135,7 @@ RULES:
 
 Be thorough, creative, and production-ready.`;
 
-const SYSTEM_PROMPT_EXISTING_APP = `You are an expert software architect for SaveADay Factory.
+const SYSTEM_PROMPT_EXISTING_APP = `You are an expert software architect for Factory.
 The user has an EXISTING application. Your task is to DECOMPOSE their new requirements into modular FEATURE SPECS that integrate with the existing app.
 
 Do NOT generate an app spec — one already exists. Only generate feature specs.

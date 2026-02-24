@@ -1,9 +1,9 @@
-# SaveADay Factory — Agent Instructions
+# Factory — Agent Instructions
 
 ## Project Structure
 
 ```
-saveaday-factory/
+factory/
 ├── engine/                ← Core build engine (TypeScript, runs via npx tsx)
 │   ├── cli.ts             ← CLI entry point & command dispatcher
 │   ├── config.ts          ← projects.json, settings.json, factory.yaml loading

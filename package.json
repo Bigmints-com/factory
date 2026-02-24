@@ -1,15 +1,15 @@
 {
-    "name": "saveaday-factory",
+    "name": "factory",
     "version": "1.0.0",
     "type": "module",
     "description": "Autonomous app scaffolding factory — generate production-ready apps from YAML specs",
     "license": "MIT",
-    "author": "SaveADay",
+    "author": "Factory",
     "repository": {
         "type": "git",
-        "url": "https://github.com/saveaday/factory.git"
+        "url": "https://github.com/factory/factory.git"
     },
-    "homepage": "https://github.com/saveaday/factory",
+    "homepage": "https://github.com/factory/factory",
     "keywords": [
         "code-generation",
         "scaffolding",

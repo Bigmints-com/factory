@@ -1,9 +1,9 @@
 ---
-name: SaveADay Factory
+name: Factory
 description: Autonomous app scaffolding and feature generation factory
 ---
 
-# SaveADay Factory Skill
+# Factory Skill
 
 ## What This Does
 
@@ -78,7 +78,7 @@ metadata:
 deployment:
   port: 3020
   region: us-central1
-  customDomain: myapp.saveaday.ai
+  customDomain: myapp.factory.ai
 
 database:
   firestoreId: myapp

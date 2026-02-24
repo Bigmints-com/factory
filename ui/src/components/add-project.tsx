@@ -476,7 +476,7 @@ export function AddProject({ onProjectAdded }: AddProjectProps) {
                       <div className="space-y-1">
                           <p className="text-sm font-semibold">No projects connected</p>
                           <p className="text-xs text-muted-foreground max-w-[240px]">
-                              Connect your first repository to start using SaveADay Factory.
+                              Connect your first repository to start using Factory.
                           </p>
                       </div>
                       <Button variant="outline" size="sm" onClick={() => setShowModal(true)}>

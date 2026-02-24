@@ -9,5 +9,5 @@ if [ -n "$PID" ]; then
   sleep 1
 fi
 
-echo "🚀 Starting SaveADay Factory on http://localhost:$PORT"
+echo "🚀 Starting Factory on http://localhost:$PORT"
 cd "$(dirname "$0")/ui" && npm run dev -- -p $PORT 2>&1
