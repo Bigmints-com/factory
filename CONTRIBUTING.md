@@ -6,7 +6,7 @@ Thank you for your interest in contributing! This guide will help you get set up
 
 ```bash
 # Clone the repo
-git clone https://github.com/factory/factory.git
+git clone https://github.com/Bigmints-com/factory.git
 cd factory
 
 # Install dependencies

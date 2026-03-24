@@ -44,7 +44,7 @@ Write a spec. Queue it up. Go to sleep. Wake up to working code.
 ### Install
 
 ```bash
-git clone https://github.com/factory/factory.git
+git clone https://github.com/Bigmints-com/factory.git
 cd factory
 npm install
 ```
@@ -275,9 +275,9 @@ Configure one or more providers:
 | **OpenAI** | API key from [OpenAI Platform](https://platform.openai.com/)          |
 | **Ollama** | Local install from [ollama.ai](https://ollama.ai/) — free, no API key |
 
-### Project Bridge (`.factory/factory.yaml`)
+### Project Bridge (`.Bigmints-com/factory.yaml`)
 
-Each connected repo has a `.factory/factory.yaml` that defines:
+Each connected repo has a `.Bigmints-com/factory.yaml` that defines:
 
 ```yaml
 version: 1

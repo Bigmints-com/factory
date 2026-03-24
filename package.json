@@ -7,9 +7,9 @@
     "author": "Factory",
     "repository": {
         "type": "git",
-        "url": "https://github.com/factory/factory.git"
+        "url": "https://github.com/Bigmints-com/factory.git"
     },
-    "homepage": "https://github.com/factory/factory",
+    "homepage": "https://github.com/Bigmints-com/factory",
     "keywords": [
         "code-generation",
         "scaffolding",
