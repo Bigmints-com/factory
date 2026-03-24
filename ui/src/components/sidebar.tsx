@@ -1,7 +1,7 @@
 'use client';
 
 import { cn } from '@/lib/utils';
-import { Factory, FileText, BarChart3, FolderOpen, ListOrdered, BookOpen, Plug, Settings, Shield } from 'lucide-react';
+import { Factory, FileText, BarChart3, FolderOpen, ListOrdered, BookOpen, Plug, Settings, Shield, Wand2 } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { ProjectSwitcher } from '@/components/project-switcher';
 
@@ -16,6 +16,7 @@ const mainNav = [
   { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
   { id: 'specs', label: 'Specs', icon: FileText },
   { id: 'queue', label: 'Queue', icon: ListOrdered },
+  { id: 'skills', label: 'Skills', icon: Wand2 },
   { id: 'reports', label: 'Reports', icon: BarChart3 },
   { id: 'knowledge', label: 'Knowledge', icon: BookOpen },
 ];

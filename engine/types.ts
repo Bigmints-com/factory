@@ -276,6 +276,41 @@ export interface ValidationResult {
     errors: string[];
 }
 
+// ─── Skills ──────────────────────────────────────────────
+
+/** A reusable skill/recipe the engine can discover and apply during builds */
+export interface Skill {
+    id: string;
+    name: string;
+    description: string;
+    tags: string[];
+    trigger: string;               // regex/keyword trigger pattern
+    instructions: string;          // markdown instructions for the LLM
+    template: string;              // optional code template
+    category: SkillCategory;
+    enabled: boolean;
+    createdAt: string;
+    updatedAt: string;
+}
+
+export type SkillCategory = 'general' | 'layout' | 'auth' | 'api' | 'data' | 'ui' | 'integration' | 'custom';
+
+/** A skill with its relevance score after matching */
+export interface ScoredSkill {
+    skill: Skill;
+    score: number;
+    matchReason: string;
+}
+
+/** Context used to match skills against a build task */
+export interface SkillMatchContext {
+    specName: string;
+    specDescription: string;
+    stack: string;
+    tags: string[];
+    taskDescription?: string;
+}
+
 // ─── Helpers ─────────────────────────────────────────────
 
 /** Slugify a string: "My App Name" → "my-app-name" */

@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 /**
  * Queue execution API — start processing the build queue.
  * 
@@ -12,9 +13,9 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs
 import { spawn } from 'node:child_process';
 import Database from 'better-sqlite3';
 
-const DB_PATH = resolve(process.cwd(), '..', 'factory.db');
-const FACTORY_ROOT = resolve(process.cwd(), '..');
-const LOG_FILE = resolve(process.cwd(), '..', 'factory-build.log');
+const DB_PATH = resolve(homedir(), '.factory', 'factory.db');
+const FACTORY_ROOT = resolve(homedir(), '.factory');
+const LOG_FILE = resolve(FACTORY_ROOT, 'factory-build.log');
 
 function getDb() {
   const db = new Database(DB_PATH);
@@ -263,16 +264,16 @@ function processQueueInBackground() {
     // Resolve the spec path
     const resolvedPath = resolveSpecPath(item.spec_file, item.kind);
 
-    // Build the command
-    const args = item.kind === 'FeatureSpec'
-      ? ['tsx', 'engine/cli.ts', 'feature', 'build', resolvedPath]
-      : ['tsx', 'engine/cli.ts', 'build', resolvedPath];
+    // Build the command — pass engine flag if not factory (default)
+    const engineFlag = item.engine && item.engine !== 'factory' ? ['--engine', item.engine] : [];
+    const cmdArgs = item.kind === 'FeatureSpec'
+      ? ['feature', 'build', resolvedPath, ...engineFlag]
+      : ['build', resolvedPath, ...engineFlag];
 
-    // Spawn the build process
-    const child = spawn('npx', args, {
-      cwd: FACTORY_ROOT,
+    // Spawn the build process using globally-linked factory CLI
+    const child = spawn('factory', cmdArgs, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env: { ...process.env, npm_config_cache: '/tmp/factory-npm-cache', TMPDIR: '/tmp/factory-npm-cache' },
     });
 
     let stdout = '';

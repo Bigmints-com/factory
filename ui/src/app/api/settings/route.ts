@@ -3,7 +3,10 @@ import { resolve } from 'node:path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-const SETTINGS_FILE = resolve(process.cwd(), '..', 'settings.json');
+import { homedir } from 'node:os';
+
+const FACTORY_ROOT = resolve(homedir(), '.factory');
+const SETTINGS_FILE = resolve(FACTORY_ROOT, 'settings.json');
 
 function defaultSettings() {
     return {

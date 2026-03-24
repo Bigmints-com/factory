@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 /**
  * GET /api/repo-scan — Scan the active project's repo for context
  *
@@ -8,7 +9,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve, join, relative } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 
-const FACTORY_ROOT = resolve(process.cwd(), '..');
+const FACTORY_ROOT = resolve(homedir(), '.factory');
 
 interface RepoScanResult {
   projectName: string;

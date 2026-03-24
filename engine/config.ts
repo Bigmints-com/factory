@@ -5,6 +5,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { resolve, join, basename } from 'node:path';
+import { homedir } from 'node:os';
 import { parse as parseYaml, stringify as toYaml } from 'yaml';
 import type {
     ProjectsConfig, Project, ProjectStack,
@@ -15,10 +16,15 @@ import { log } from './log.ts';
 
 // ─── Paths ───────────────────────────────────────────────
 
-/** Root of the factory (where package.json lives) */
-export const FACTORY_ROOT = resolve(import.meta.dirname, '..');
+/** Root of the global factory state */
+export const FACTORY_ROOT = resolve(homedir(), '.factory');
 
-/** Key file paths within the factory */
+// Ensure FACTORY_ROOT exists
+if (!existsSync(FACTORY_ROOT)) {
+    mkdirSync(FACTORY_ROOT, { recursive: true });
+}
+
+/** Key file paths within the global factory directory */
 export const PATHS = {
     projects: resolve(FACTORY_ROOT, 'projects.json'),
     settings: resolve(FACTORY_ROOT, 'settings.json'),

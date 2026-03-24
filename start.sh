@@ -1,5 +1,5 @@
 #!/bin/bash
-PORT=4040
+PORT=11498
 
 # Kill any process using the port
 PID=$(lsof -ti:$PORT 2>/dev/null)

@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 /**
  * PATCH  /api/projects/:id — Set as active project
  * DELETE /api/projects/:id — Remove a project
@@ -7,7 +8,7 @@ import { resolve, join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 
-const FACTORY_ROOT = resolve(process.cwd(), '..');
+const FACTORY_ROOT = resolve(homedir(), '.factory');
 const PROJECTS_FILE = join(FACTORY_ROOT, 'projects.json');
 
 function loadProjectsConfig() {
@@ -28,10 +29,16 @@ export async function PATCH(
   try {
     const { id } = await params;
 
+    const execOptions = {
+      encoding: 'utf-8' as BufferEncoding,
+      timeout: 30000,
+      env: { ...process.env, npm_config_cache: '/tmp/factory-npm-cache', TMPDIR: '/tmp/factory-npm-cache' }
+    };
+
     // Switch active project via CLI
     const output = stripAnsi(execSync(
-      `npx tsx engine/cli.ts project switch "${id}" 2>&1`,
-      { cwd: FACTORY_ROOT, encoding: 'utf-8', timeout: 30000 }
+      `factory project switch "${id}" 2>&1`,
+      execOptions
     ));
 
     // Re-read to get the project data
@@ -42,8 +49,8 @@ export async function PATCH(
       // Re-sync reference for the new active project
       try {
         execSync(
-          `npx tsx engine/cli.ts sync "${project.path}" 2>&1`,
-          { cwd: FACTORY_ROOT, encoding: 'utf-8', timeout: 30000 }
+          `factory sync "${project.path}" 2>&1`,
+          execOptions
         );
       } catch {
         // Sync failure shouldn't block switching
@@ -52,8 +59,11 @@ export async function PATCH(
 
     return NextResponse.json({ success: true, project, output });
   } catch (err: any) {
+    const stdout = err.stdout ? stripAnsi(err.stdout.toString()) : '';
+    const stderr = err.stderr ? stripAnsi(err.stderr.toString()) : '';
+    const combinedOutput = `${err.message}\n${stdout}\n${stderr}`.trim();
     return NextResponse.json(
-      { error: err.message || 'Failed to switch project' },
+      { error: 'Failed to switch project', details: combinedOutput, output: stdout },
       { status: err.message?.includes('not found') ? 404 : 500 }
     );
   }
@@ -66,15 +76,24 @@ export async function DELETE(
   try {
     const { id } = await params;
 
+    const execOptions = {
+      encoding: 'utf-8' as BufferEncoding,
+      timeout: 30000,
+      env: { ...process.env, npm_config_cache: '/tmp/factory-npm-cache', TMPDIR: '/tmp/factory-npm-cache' }
+    };
+
     const output = stripAnsi(execSync(
-      `npx tsx engine/cli.ts project remove "${id}" 2>&1`,
-      { cwd: FACTORY_ROOT, encoding: 'utf-8', timeout: 30000 }
+      `factory project remove "${id}" 2>&1`,
+      execOptions
     ));
 
     return NextResponse.json({ success: true, output });
   } catch (err: any) {
+    const stdout = err.stdout ? stripAnsi(err.stdout.toString()) : '';
+    const stderr = err.stderr ? stripAnsi(err.stderr.toString()) : '';
+    const combinedOutput = `${err.message}\n${stdout}\n${stderr}`.trim();
     return NextResponse.json(
-      { error: err.message || 'Failed to remove project' },
+      { error: 'Failed to remove project', details: combinedOutput, output: stdout },
       { status: err.message?.includes('not found') ? 404 : 500 }
     );
   }

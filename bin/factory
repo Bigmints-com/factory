@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Factory CLI — resolves back to the real project dir, then runs via tsx
+
+# Resolve the real path of this script (follows symlinks)
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+DIR="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+
+exec "$DIR/node_modules/.bin/tsx" "$DIR/engine/cli.ts" "$@"

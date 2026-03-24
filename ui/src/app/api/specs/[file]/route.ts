@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 /**
  * GET  /api/specs/[file] — Read raw YAML content of a spec file
  * PUT  /api/specs/[file] — Write updated YAML content back to the spec file
@@ -6,7 +7,7 @@ import { NextResponse } from 'next/server';
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 
-const FACTORY_ROOT = resolve(process.cwd(), '..');
+const FACTORY_ROOT = resolve(homedir(), '.factory');
 
 /**
  * Resolve the specs base directory — active project or factory fallback.

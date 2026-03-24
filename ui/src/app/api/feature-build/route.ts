@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 /**
  * POST /api/feature-build — Build a feature from a feature spec
  * Body: { specFile: "features/filename.yaml" }
@@ -7,7 +8,7 @@ import { resolve, join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 
-const FACTORY_ROOT = resolve(process.cwd(), '..');
+const FACTORY_ROOT = resolve(homedir(), '.factory');
 
 const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
 
@@ -60,9 +61,15 @@ export async function POST(request: Request) {
 
     const cmd = action === 'validate' ? 'validate' : 'build';
 
+    const execOptions = {
+      encoding: 'utf-8' as BufferEncoding,
+      timeout: 300000,
+      env: { ...process.env, npm_config_cache: '/tmp/factory-npm-cache', TMPDIR: '/tmp/factory-npm-cache' }
+    };
+
     const result = stripAnsi(execSync(
-      `npx tsx engine/cli.ts feature ${cmd} "${specPath}" 2>&1`,
-      { cwd: FACTORY_ROOT, encoding: 'utf-8', timeout: 300000 }
+      `factory feature ${cmd} "${specPath}" 2>&1`,
+      execOptions
     ));
 
     const success = result.includes('COMPLETE') || result.includes('PASSED');

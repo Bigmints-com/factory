@@ -203,12 +203,10 @@ export function AddProject({ onProjectAdded }: AddProjectProps) {
       });
 
       const data = await res.json();
-
       if (!res.ok) {
-        toast.error('Failed to connect project', { description: data.error });
+        toast.error('Failed to connect project', { description: data.details || data.error });
         return;
       }
-
       setCompletedSteps(prev => ({ ...prev, build: true }));
       toast.success(`${data.project?.name || 'Project'} connected!`, {
         description: data.project?.path,
@@ -251,19 +249,49 @@ export function AddProject({ onProjectAdded }: AddProjectProps) {
       if (res.ok) {
         toast.success('Project removed');
         await loadProjects();
+      } else {
+        const data = await res.json();
+        toast.error('Failed to remove project', { description: data.details || data.error });
       }
-    } catch {
-      toast.error('Failed to remove project');
+    } catch (err: any) {
+      toast.error('Failed to remove project', { description: err.message });
     } finally {
       setDeleting(null);
     }
   };
 
-  const handleFolderSelected = (path: string) => {
+  const [isScanning, setIsScanning] = useState(false);
+
+  const handleFolderSelected = async (path: string) => {
     setPendingPath(path);
     setBrowseMode(null);
     setCompletedSteps(prev => ({ ...prev, location: true }));
     setOpenStepId("config");
+    setIsScanning(true);
+
+    try {
+      const res = await fetch('/api/projects/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.stack) {
+           setConfig(prev => ({
+             ...prev,
+             framework: data.stack.framework !== 'node' ? data.stack.framework : prev.framework,
+             packageManager: data.stack.packageManager !== 'npm' ? data.stack.packageManager : prev.packageManager,
+             linter: data.stack.linter !== 'None' ? data.stack.linter : prev.linter,
+             testing: data.stack.testing !== 'None' ? data.stack.testing : prev.testing,
+           }));
+        }
+      }
+    } catch {
+      // silently fail discovery
+    } finally {
+      setIsScanning(false);
+    }
   };
 
   const completedCount = Object.values(completedSteps).filter(Boolean).length;
@@ -325,6 +353,12 @@ export function AddProject({ onProjectAdded }: AddProjectProps) {
       icon: <IconSettings className="size-4" />,
       content: (
         <div className="space-y-4 mt-4">
+          {isScanning && (
+            <div className="flex items-center gap-2 text-xs text-primary bg-primary/10 p-2.5 rounded-md">
+              <IconLoader2 className="h-3.5 w-3.5 animate-spin" />
+              Scanning repository for stack configuration...
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Framework</label>
@@ -337,6 +371,7 @@ export function AddProject({ onProjectAdded }: AddProjectProps) {
                 <option value="react">React (Vite)</option>
                 <option value="remix">Remix</option>
                 <option value="node">Node.js</option>
+                <option value="flutter">Flutter</option>
               </select>
             </div>
 
@@ -351,6 +386,7 @@ export function AddProject({ onProjectAdded }: AddProjectProps) {
                 <option value="yarn">yarn</option>
                 <option value="pnpm">pnpm</option>
                 <option value="bun">bun</option>
+                <option value="pub">pub</option>
               </select>
             </div>
 
@@ -377,6 +413,7 @@ export function AddProject({ onProjectAdded }: AddProjectProps) {
                 <option value="jest">Jest</option>
                 <option value="vitest">Vitest</option>
                 <option value="playwright">Playwright</option>
+                <option value="flutter_test">Flutter test</option>
                 <option value="None">None</option>
               </select>
             </div>

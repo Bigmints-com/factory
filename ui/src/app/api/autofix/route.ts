@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 /**
  * POST /api/autofix — Use the LLM to fix a broken YAML spec
  * Body: { specFile: "features/foo.yaml", error: "YAML parse error..." }
@@ -10,7 +11,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { parse as parseYaml } from 'yaml';
 import { execSync } from 'node:child_process';
 
-const FACTORY_ROOT = resolve(process.cwd(), '..');
+const FACTORY_ROOT = resolve(homedir(), '.factory');
 
 function resolveSpecFile(specFile: string): string {
   try {

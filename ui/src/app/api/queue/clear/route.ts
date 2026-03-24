@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 /**
  * Queue Clear API — delete ALL queue items regardless of status
  */
@@ -7,7 +8,7 @@ import { resolve } from 'node:path';
 import { execSync } from 'node:child_process';
 import Database from 'better-sqlite3';
 
-const DB_PATH = resolve(process.cwd(), '..', 'factory.db');
+const DB_PATH = resolve(homedir(), '.factory', 'factory.db');
 
 function getDb() {
   const db = new Database(DB_PATH);

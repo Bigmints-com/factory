@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 /**
  * POST /api/chat — Streaming LLM chat for spec generation
  *
@@ -9,7 +10,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 
-const FACTORY_ROOT = resolve(process.cwd(), '..');
+const FACTORY_ROOT = resolve(homedir(), '.factory');
 
 /**
  * Read the active project's bridge config (factory.yaml) inline,

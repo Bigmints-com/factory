@@ -7,6 +7,8 @@ import { getDb } from './db.ts';
 
 // ─── Types ───────────────────────────────────────────────
 
+export type BuildEngine = 'factory' | 'gemini-cli';
+
 export interface QueueItem {
     id: string;
     specFile: string;
@@ -15,6 +17,7 @@ export interface QueueItem {
     priority: number;
     phase: number;
     dependsOn: string[];
+    engine: BuildEngine;
     addedAt: string;
     startedAt: string | null;
     completedAt: string | null;
@@ -32,6 +35,7 @@ interface QueueRow {
     priority: number;
     phase: number;
     depends_on: string;
+    engine: string | null;
     added_at: string;
     started_at: string | null;
     completed_at: string | null;
@@ -54,6 +58,7 @@ function mapRow(row: QueueRow): QueueItem {
         priority: row.priority,
         phase: row.phase || 0,
         dependsOn,
+        engine: (row.engine as BuildEngine) || 'factory',
         addedAt: row.added_at,
         startedAt: row.started_at,
         completedAt: row.completed_at,
@@ -78,13 +83,14 @@ export function timestamp(): string {
 export function enqueue(
     specFile: string,
     kind: 'AppSpec' | 'FeatureSpec',
-    opts?: { phase?: number; dependsOn?: string[] },
+    opts?: { phase?: number; dependsOn?: string[]; engine?: BuildEngine },
 ): QueueItem {
     const db = getDb();
     const id = generateId();
     const now = timestamp();
     const phase = opts?.phase ?? 0;
     const dependsOn = JSON.stringify(opts?.dependsOn ?? []);
+    const engine = opts?.engine ?? 'factory';
 
     // Check for duplicates
     const existing = db.prepare(
@@ -96,9 +102,9 @@ export function enqueue(
     }
 
     db.prepare(`
-        INSERT INTO queue_items (id, spec_file, kind, status, priority, phase, depends_on, added_at)
-        VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
-    `).run(id, specFile, kind, phase, dependsOn, now);
+        INSERT INTO queue_items (id, spec_file, kind, status, priority, phase, depends_on, engine, added_at)
+        VALUES (?, ?, ?, 'pending', 0, ?, ?, ?, ?)
+    `).run(id, specFile, kind, phase, dependsOn, engine, now);
 
     return getItem(id)!;
 }

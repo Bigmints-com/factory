@@ -20,10 +20,10 @@
         "factory"
     ],
     "bin": {
-        "factory": "./engine/cli.ts"
+        "factory": "./bin/factory"
     },
     "scripts": {
-        "dev": "cd ui && npm run dev -- -p 4040",
+        "dev": "cd ui && npm run dev -- -p 4090",
         "factory": "tsx engine/cli.ts",
         "scaffold": "tsx engine/cli.ts scaffold",
         "validate": "tsx engine/cli.ts validate",

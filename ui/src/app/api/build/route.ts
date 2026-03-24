@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 /**
  * POST /api/build — Run full build pipeline for a spec
  * Body: { specFile: "filename.yaml" }
@@ -7,7 +8,7 @@ import { resolve, join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 
-const FACTORY_ROOT = resolve(process.cwd(), '..');
+const FACTORY_ROOT = resolve(homedir(), '.factory');
 
 /**
  * Resolve a spec filename to its absolute path.
@@ -60,9 +61,15 @@ export async function POST(request: Request) {
     }
 
     const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
+    const execOptions = {
+      encoding: 'utf-8' as BufferEncoding,
+      timeout: 1_200_000,
+      env: { ...process.env, npm_config_cache: '/tmp/factory-npm-cache', TMPDIR: '/tmp/factory-npm-cache' }
+    };
+
     const result = stripAnsi(execSync(
-      `npx tsx engine/cli.ts build "${specPath}" 2>&1`,
-      { cwd: FACTORY_ROOT, encoding: 'utf-8', timeout: 1_200_000 } // 20 min — prioritise quality
+      `factory build "${specPath}" 2>&1`,
+      execOptions
     ));
 
     const success = result.includes('BUILD COMPLETE') || result.includes('All tests passed');

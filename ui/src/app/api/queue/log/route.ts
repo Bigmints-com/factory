@@ -8,10 +8,12 @@
 import { NextResponse } from 'next/server';
 import { resolve } from 'node:path';
 import { existsSync, readFileSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import Database from 'better-sqlite3';
 
-const DB_PATH = resolve(process.cwd(), '..', 'factory.db');
-const LOG_FILE = resolve(process.cwd(), '..', 'factory-build.log');
+const FACTORY_ROOT = resolve(homedir(), '.factory');
+const DB_PATH = resolve(FACTORY_ROOT, 'factory.db');
+const LOG_FILE = resolve(FACTORY_ROOT, 'factory-build.log');
 
 export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);

@@ -18,6 +18,7 @@ import { specSlug, specPort } from './types.ts';
 import { loadSettings, getActiveProvider } from './config.ts';
 import { gatherAppContext, loadQueueContext } from './context.ts';
 import { log, logStep, logError } from './log.ts';
+import { resolveSkillsForBuild, formatSkillsForPrompt, seedDefaultSkills } from './skills.ts';
 
 const PIPELINE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes — prioritise quality over speed
 
@@ -50,6 +51,14 @@ export async function runPipeline(
     // Step 0: Classify the task
     const profile = classifyTask(spec);
 
+    // Step 0.5: Resolve relevant skills
+    seedDefaultSkills();
+    const matchedSkills = resolveSkillsForBuild(spec, context);
+    const skillsBlock = formatSkillsForPrompt(matchedSkills);
+    if (matchedSkills.length > 0) {
+        log('✓', `Matched ${matchedSkills.length} skill(s): ${matchedSkills.map(s => s.skill.name).join(', ')}`);
+    }
+
     // Step 1: Plan (skip for static/config tasks)
     let plan: BuildPlan;
     if (profile.needsPlan) {
@@ -77,10 +86,9 @@ export async function runPipeline(
         log('✓', `Task type: ${profile.type} — plan skipped`);
     }
 
-    // Step 2: Build (first attempt)
     logStep(2, 5, 'Generating code...');
     log('→', `Sending prompt to ${provider.name} (${model})...`);
-    let buildResult = await executeBuild(spec, context, plan, provider, model);
+    let buildResult = await executeBuild(spec, context, plan, provider, model, skillsBlock);
     let files = buildResult.files;
     totalTokensIn += buildResult.tokensIn;
     totalTokensOut += buildResult.tokensOut;
@@ -186,8 +194,20 @@ export async function runFeaturePipeline(
     // Step 1: Generate code (with app context + queue context)
     logStep(1, 5, 'Generating feature code...');
     log('→', `Sending prompt to ${provider.name} (${model})...`);
+
+    // Resolve relevant skills for the feature build
+    seedDefaultSkills();
+    const matchedSkills = resolveSkillsForBuild(
+        { appName: spec.feature.name, description: '', stack: { framework: context.stack?.framework || '' } } as any,
+        context,
+    );
+    const skillsBlock = formatSkillsForPrompt(matchedSkills);
+    if (matchedSkills.length > 0) {
+        log('✓', `Matched ${matchedSkills.length} skill(s): ${matchedSkills.map(s => s.skill.name).join(', ')}`);
+    }
+
     const queueContext = loadQueueContext(context.repoPath);
-    const prompt = buildFeaturePrompt(spec, context, appContext, queueContext);
+    const prompt = buildFeaturePrompt(spec, context, appContext, queueContext, skillsBlock);
     const raw = await callProvider(provider, model, prompt);
     let files = parseGeneratedFiles(raw.text);
     totalTokensIn += raw.tokensIn;
@@ -339,6 +359,7 @@ async function executeBuild(
     plan: BuildPlan,
     provider: LLMProvider,
     model: string,
+    skillsBlock?: string,
 ): Promise<{ files: GeneratedFile[]; tokensIn: number; tokensOut: number }> {
     // For large apps, use module-by-module generation
     const MODULE_THRESHOLD = 15;
@@ -348,7 +369,7 @@ async function executeBuild(
     }
 
     // Standard single-shot generation for smaller apps
-    const prompt = buildAppPrompt(spec, context, plan);
+    const prompt = buildAppPrompt(spec, context, plan, skillsBlock);
 
     log('→', `Prompt: ${prompt.length.toLocaleString()} chars`);
     log('→', `Calling ${provider.name}...`);
@@ -1300,10 +1321,11 @@ Output ONLY the files. No explanations.`;
 
 // ─── Prompt Builders ─────────────────────────────────────
 
-function buildAppPrompt(spec: AppSpec, context: ProjectContext, plan: BuildPlan): string {
+function buildAppPrompt(spec: AppSpec, context: ProjectContext, plan: BuildPlan, skillsBlock?: string): string {
     const specBlock = formatSpec(spec);
     const contextBlock = formatContext(context);
     const planBlock = `## Build Plan\n- Architecture: ${plan.architecture}\n- Files to generate: ${plan.files.join(', ')}\n- Decisions: ${plan.decisions.join('; ')}`;
+    const skillsSection = skillsBlock ? `\n${skillsBlock}\n` : '';
 
     return `You are a senior full-stack developer. Generate a complete, production-ready application based on the following specification, plan, and project context.
 
@@ -1312,6 +1334,7 @@ ${specBlock}
 ${planBlock}
 
 ${contextBlock}
+${skillsSection}
 
 ## Requirements
 
@@ -1342,7 +1365,7 @@ Output EVERY file with this exact delimiter format:
 Do NOT include any explanatory text outside of the file delimiters. Output ONLY the files.`;
 }
 
-function buildFeaturePrompt(spec: FeatureSpec, context: ProjectContext, appContext?: AppIntegrationContext, queueContext?: QueueBuildContext[]): string {
+function buildFeaturePrompt(spec: FeatureSpec, context: ProjectContext, appContext?: AppIntegrationContext, queueContext?: QueueBuildContext[], skillsBlock?: string): string {
     const contextBlock = formatContext(context);
     const depsBlock = spec.dependencies?.length
         ? `\n## Required Packages\nThese packages MUST be in package.json dependencies:\n${spec.dependencies.map(d => `- ${d}`).join('\n')}\n\nDo not add version numbers — use "*" and the engine will resolve to latest.`
@@ -1415,7 +1438,7 @@ ${spec.pages ? `## Pages
 ${spec.pages.map(p => `- ${p.title} (${p.type}) at /${p.slug}`).join('\n')}` : ''}
 
 ${contextBlock}
-
+${skillsBlock ? `\n${skillsBlock}\n` : ''}
 ## Requirements
 1. Every "import ... from 'package'" MUST reference a package listed in package.json
 2. Cross-module import/export consistency: use consistent export styles across all files

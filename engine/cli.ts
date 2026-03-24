@@ -21,6 +21,7 @@ import { loadSpec, loadFeatureSpec, listSpecs, validateSpec, validateFeatureSpec
 import { loadProjects, getActiveProject, addProject, removeProject, switchProject, loadBridgeConfig } from './config.ts';
 import { gatherContext } from './context.ts';
 import { runPipeline, runFeaturePipeline } from './generate.ts';
+import { runGeminiCLIBuild, runGeminiCLIFeatureBuild, isGeminiCLIAvailable } from './gemini-cli-engine.ts';
 import { writeFiles, setupProject, gitCommit, gitPush, writeKnowledgeEntry, writeAppAgentsMd, buildDebrief } from './writer.ts';
 import { autoFixSpec } from './autofix.ts';
 import { log, logHeader, logStep, logError } from './log.ts';
@@ -32,7 +33,7 @@ import {
     isQueueRunning, setQueueRunning, areDependenciesMet,
 } from './queue.ts';
 import { closeDb, logBuild } from './db.ts';
-import { performStateAudit, updateHeartbeat, withRetry } from './health.ts';
+import { performStateAudit, updateHeartbeat, withRetry, categorizeError } from './health.ts';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -56,6 +57,13 @@ async function main(): Promise<void> {
             return handleFeature(target, args[2]);
         case 'queue':
             return handleQueue(target, args[2]);
+        case 'start':
+            return handleStart();
+        case 'stop':
+            return handleStop();
+        case 'restart':
+            handleStop();
+            return handleStart();
         default:
             printUsage();
             process.exit(command ? 1 : 0);
@@ -88,17 +96,39 @@ async function handleBuild(specPath?: string): Promise<void> {
     const bridge = loadBridgeConfig(project.path);
     const context = gatherContext(project.path, bridge);
 
-    // Steps 3-5: Plan → Build → Test → Iterate (inside runPipeline)
-    const result = await runPipeline(spec, context);
+    // Steps 3-5: Plan → Build → Test → Iterate (or Gemini CLI engine)
+    const engineFlag = parseFlags(args.slice(2)).engine as string | undefined;
+    const useGeminiCLI = engineFlag === 'gemini-cli';
 
-    // Step 6: Write files
-    logStep(6, 7, 'Writing files to repo...');
+    let result;
+    if (useGeminiCLI) {
+        const check = isGeminiCLIAvailable();
+        if (!check.available) {
+            logError(check.error || 'Gemini CLI is not available');
+            process.exit(1);
+        }
+        logStep(3, 7, `Generating with Gemini CLI (${check.version})...`);
+        const slug = specSlug(spec);
+        const targetDir = bridge.apps_dir
+            ? resolve(project.path, bridge.apps_dir, slug)
+            : resolve(project.path, slug);
+        result = await runGeminiCLIBuild(spec, context, targetDir);
+    } else {
+        result = await runPipeline(spec, context);
+    }
+
+    // Step 6: Write files (skip for Gemini CLI — it writes directly to disk)
     const slug = specSlug(spec);
     const targetDir = bridge.apps_dir
         ? resolve(project.path, bridge.apps_dir, slug)
         : resolve(project.path, slug);
-    writeFiles(targetDir, result.files);
-    setupProject(targetDir, spec.stack.packageManager);
+    if (!useGeminiCLI) {
+        logStep(6, 7, 'Writing files to repo...');
+        writeFiles(targetDir, result.files);
+        setupProject(targetDir, spec.stack.packageManager);
+    } else {
+        logStep(6, 7, 'Files already written by Gemini CLI');
+    }
 
     // Knowledge feedback + AGENTS.md
     writeKnowledgeEntry(project.path, spec.appName, result, spec.stack, specPath!);
@@ -334,14 +364,29 @@ async function handleFeature(subcommand?: string, specPath?: string): Promise<vo
             const bridge = loadBridgeConfig(project.path);
             const context = gatherContext(project.path, bridge);
 
-            const result = await runFeaturePipeline(spec, context);
+            // Check for --engine flag
+            const featureFlags = parseFlags(args.slice(3));
+            const useGeminiCLIFeature = featureFlags.engine === 'gemini-cli';
 
-            // Write files to the target app directory
             const targetDir = bridge.apps_dir
                 ? resolve(project.path, bridge.apps_dir, spec.target.app)
                 : resolve(project.path, spec.target.app);
-            writeFiles(targetDir, result.files);
-            setupProject(targetDir, bridge.stack?.packageManager);
+
+            let result;
+            if (useGeminiCLIFeature) {
+                const check = isGeminiCLIAvailable();
+                if (!check.available) {
+                    logError(check.error || 'Gemini CLI is not available');
+                    process.exit(1);
+                }
+                log('→', `Using Gemini CLI engine for feature (${check.version})`);
+                result = await runGeminiCLIFeatureBuild(spec, context, targetDir);
+            } else {
+                result = await runFeaturePipeline(spec, context);
+                // Write files only for factory engine
+                writeFiles(targetDir, result.files);
+                setupProject(targetDir, bridge.stack?.packageManager);
+            }
 
             // Knowledge feedback + AGENTS.md (per-feature naming)
             const featureStack = bridge.stack || { framework: 'unknown', packageManager: 'npm' };
@@ -429,10 +474,15 @@ async function handleQueue(subcommand?: string, arg?: string): Promise<void> {
                 dependsOn = fSpec.dependsOn;
             } catch { /* assume AppSpec */ }
 
-            const item = enqueue(specPath, kind, { phase, dependsOn });
+            // Detect engine flag from CLI args
+            const queueFlags = parseFlags(args.slice(3));
+            const engine = (queueFlags.engine === 'gemini-cli') ? 'gemini-cli' as const : 'factory' as const;
+
+            const item = enqueue(specPath, kind, { phase, dependsOn, engine });
             const phaseInfo = phase ? ` [phase ${phase}]` : '';
             const depsInfo = dependsOn && dependsOn.length > 0 ? ` (depends on: ${dependsOn.join(', ')})` : '';
-            log('✓', `Queued: ${item.specFile} (${item.kind})${phaseInfo}${depsInfo} → ${item.id}`);
+            const engineInfo = engine !== 'factory' ? ` [engine: ${engine}]` : '';
+            log('✓', `Queued: ${item.specFile} (${item.kind})${phaseInfo}${depsInfo}${engineInfo} → ${item.id}`);
             break;
         }
 
@@ -761,6 +811,7 @@ async function handleQueueStart(): Promise<void> {
                     }
                 }
             } catch (error) {
+                const msg = error instanceof Error ? error.message : String(error);
                 const durationMs = Date.now() - startTime;
                 const category = categorizeError(error);
                 markFailed(current.id, msg, '', durationMs, category);
@@ -836,28 +887,107 @@ function printUsage(): void {
 Usage: factory <command> [options]
 
 Commands:
-  build <spec.yaml>          Full pipeline: gather → validate → plan → build → test → iterate → push
+  build <spec.yaml> [--engine gemini-cli]   Full pipeline (or Gemini CLI engine)
   validate <spec.yaml>       Validate a spec
   status                     Show spec statuses
   sync <repo-path>           Sync .factory from repo
   init-bridge <repo-path>    Init .factory bridge in repo
+
+  start                      Start the Factory UI background service
+  stop                       Stop the Factory UI background service
+  restart                    Restart the Factory UI background service
 
   project add <repo-path>    Connect a repo
   project list               List connected repos
   project switch <id>        Switch active project
   project remove <id>        Disconnect a repo
 
-  feature build <spec.yaml>     Build a feature
+  feature build <spec.yaml> [--engine gemini-cli]  Build a feature
   feature validate <spec.yaml>  Validate a feature spec
 
   queue list                    List all queue items
-  queue add <spec.yaml>         Add a spec to the queue
+  queue add <spec.yaml> [--engine gemini-cli]  Add to queue
   queue start                   Process all pending items autonomously
   queue stats                   Show queue statistics
   queue clear                   Clear completed items
   queue retry <id>              Retry a failed item
   queue remove <id>             Remove an item from queue
 `);
+}
+
+// ─── Service Management ──────────────────────────────────
+
+function handleStart(): void {
+    import('node:child_process').then(({ spawn }) => {
+        import('node:fs').then(({ writeFileSync, readFileSync, openSync }) => {
+            import('./config.ts').then(({ FACTORY_ROOT }) => {
+                const uiServer = resolve(FACTORY_ROOT, 'ui', 'server.js');
+                const pidFile = resolve(FACTORY_ROOT, 'ui.pid');
+
+                if (!existsSync(uiServer)) {
+                    logError(`UI server not found at ${uiServer}`);
+                    logError('Have you run install.sh yet?');
+                    process.exit(1);
+                }
+
+                if (existsSync(pidFile)) {
+                    try {
+                        const oldPid = parseInt(readFileSync(pidFile, 'utf8').trim(), 10);
+                        process.kill(oldPid, 0); // Check if process exists
+                        log('!', `Factory UI is already running (PID: ${oldPid})`);
+                        process.exit(0);
+                    } catch {
+                        // Process doesn't exist, stale PID file
+                    }
+                }
+
+                logHeader('Starting Factory UI...');
+                
+                const out = openSync(resolve(FACTORY_ROOT, 'ui.log'), 'a');
+                const err = openSync(resolve(FACTORY_ROOT, 'ui.err'), 'a');
+
+                const child = spawn(process.execPath, [uiServer], {
+                    cwd: resolve(FACTORY_ROOT, 'ui'),
+                    detached: true,
+                    stdio: ['ignore', out, err],
+                    env: { ...process.env, PORT: '11498' }
+                });
+
+                if (child.pid) {
+                    writeFileSync(pidFile, child.pid.toString(), 'utf8');
+                }
+                
+                child.unref();
+
+                log('✓', `Started Factory UI background service (PID: ${child.pid})`);
+                log('→', 'Dashboard available at http://localhost:11498');
+                console.log('');
+            });
+        });
+    });
+}
+
+function handleStop(): void {
+    import('node:fs').then(({ existsSync, readFileSync, unlinkSync }) => {
+        import('./config.ts').then(({ FACTORY_ROOT }) => {
+            const pidFile = resolve(FACTORY_ROOT, 'ui.pid');
+
+            if (!existsSync(pidFile)) {
+                log('!', 'Factory UI is not running (no PID file found)');
+                return;
+            }
+
+            try {
+                const pid = parseInt(readFileSync(pidFile, 'utf8').trim(), 10);
+                process.kill(pid, 'SIGINT');
+                log('✓', `Stopped Factory UI (PID: ${pid})`);
+            } catch (e) {
+                log('!', `Process might already be dead (${(e as Error).message})`);
+            } finally {
+                unlinkSync(pidFile);
+            }
+        });
+    });
 }
 
 // ─── Run ─────────────────────────────────────────────────

@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 /**
  * GET  /api/projects — List all connected projects + active project
  * POST /api/projects — Add a new project (body: { path: string })
@@ -7,7 +8,7 @@ import { resolve, join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 
-const FACTORY_ROOT = resolve(process.cwd(), '..');
+const FACTORY_ROOT = resolve(homedir(), '.factory');
 const PROJECTS_FILE = join(FACTORY_ROOT, 'projects.json');
 
 function loadProjectsConfig() {
@@ -110,15 +111,21 @@ export async function POST(request: Request) {
     if (stack.testing) flags += ` --testing "${stack.testing}"`;
 
     // Run engine CLI to add project (this handles bridge init + project registration)
+    const execOptions = { 
+      encoding: 'utf-8' as BufferEncoding, 
+      timeout: 30000,
+      env: { ...process.env, npm_config_cache: '/tmp/factory-npm-cache', TMPDIR: '/tmp/factory-npm-cache' }
+    };
+
     const output = stripAnsi(execSync(
-      `npx tsx engine/cli.ts project add "${absPath}"${flags} 2>&1`,
-      { cwd: FACTORY_ROOT, encoding: 'utf-8', timeout: 30000 }
+      `factory project add "${absPath}"${flags} 2>&1`,
+      execOptions
     ));
 
     // Now sync reference from the new project
     const syncOutput = stripAnsi(execSync(
-      `npx tsx engine/cli.ts sync "${absPath}" 2>&1`,
-      { cwd: FACTORY_ROOT, encoding: 'utf-8', timeout: 30000 }
+      `factory sync "${absPath}" 2>&1`,
+      execOptions
     ));
 
     // Re-read projects.json to get the result
@@ -140,9 +147,12 @@ export async function POST(request: Request) {
       output: output + '\n' + syncOutput,
     });
   } catch (err: any) {
-    const stdout = (err as { stdout?: string })?.stdout || '';
+    const stdout = err.stdout ? stripAnsi(err.stdout.toString()) : '';
+    const stderr = err.stderr ? stripAnsi(err.stderr.toString()) : '';
+    const combinedOutput = `${err.message}\n${stdout}\n${stderr}`.trim();
+    
     return NextResponse.json(
-      { error: err.message || 'Failed to add project', output: stdout },
+      { error: 'Failed to add project', details: combinedOutput, output: stdout },
       { status: 500 }
     );
   }

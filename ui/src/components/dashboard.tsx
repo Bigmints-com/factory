@@ -12,6 +12,7 @@ import { ReportViewer } from '@/components/report-viewer';
 import { QueueView } from '@/components/queue-view';
 import { KnowledgeView } from '@/components/knowledge-view';
 import { SettingsView } from '@/components/settings-view';
+import { SkillsView } from '@/components/skills-view';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Separator } from '@/components/ui/separator';
@@ -61,7 +62,7 @@ interface ValidationCheck {
   message: string;
 }
 
-const VALID_TABS = ['dashboard', 'queue', 'specs', 'reports', 'knowledge', 'projects', 'integrations', 'settings'];
+const VALID_TABS = ['dashboard', 'queue', 'specs', 'skills', 'reports', 'knowledge', 'projects', 'integrations', 'settings'];
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -90,6 +91,8 @@ export default function Dashboard() {
   const [isBuildingAll, setIsBuildingAll] = useState(false);
   const [queueStatusMap, setQueueStatusMap] = useState<Record<string, { status: string; id: string }>>({}); 
   const [queueRunning, setQueueRunning] = useState(false);
+  const [buildEngine, setBuildEngine] = useState<'factory' | 'gemini-cli'>('factory');
+  const [geminiCliAvailable, setGeminiCliAvailable] = useState<boolean | null>(null);
   const logOffsetRef = useRef(0);
 
   const fetchQueueStatus = useCallback(async () => {
@@ -156,6 +159,11 @@ export default function Dashboard() {
         }
       }
     }
+    // Check Gemini CLI availability
+    fetch('/api/settings/gemini-cli-check')
+      .then(r => r.json())
+      .then(d => setGeminiCliAvailable(d.available))
+      .catch(() => setGeminiCliAvailable(false));
   }, [fetchProjects, fetchSpecs, fetchReports, fetchQueueStatus]);
 
   // Sync tab to URL hash
@@ -229,7 +237,7 @@ export default function Dashboard() {
       const enqueueRes = await fetch('/api/queue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ specFile: file, kind: 'AppSpec' }),
+        body: JSON.stringify({ specFile: file, kind: 'AppSpec', engine: buildEngine }),
       });
       const enqueueData = await enqueueRes.json();
 
@@ -286,7 +294,7 @@ export default function Dashboard() {
         const enqueueRes = await fetch('/api/queue', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ specFile: file, kind: 'FeatureSpec' }),
+          body: JSON.stringify({ specFile: file, kind: 'FeatureSpec', engine: buildEngine }),
         });
         const enqueueData = await enqueueRes.json();
 
@@ -349,7 +357,7 @@ export default function Dashboard() {
       const res = await fetch('/api/queue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ specFile, kind, phase: opts?.phase, dependsOn: opts?.dependsOn }),
+        body: JSON.stringify({ specFile, kind, phase: opts?.phase, dependsOn: opts?.dependsOn, engine: buildEngine }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -397,7 +405,7 @@ export default function Dashboard() {
           const res = await fetch('/api/queue', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ specFile: spec.file, kind: 'AppSpec', phase: 0, dependsOn: [], buildAll: true }),
+            body: JSON.stringify({ specFile: spec.file, kind: 'AppSpec', phase: 0, dependsOn: [], buildAll: true, engine: buildEngine }),
           });
           if (res.ok) {
             enqueued++;
@@ -442,6 +450,7 @@ export default function Dashboard() {
               phase: fs.phase ?? 0,
               dependsOn: fs.dependsOn ?? [],
               buildAll: true,
+              engine: buildEngine,
             }),
           });
           if (res.ok) {
@@ -673,6 +682,24 @@ export default function Dashboard() {
             </span>
           </div>
           <div className="flex items-center gap-2">
+            {/* Engine selector */}
+            {geminiCliAvailable && (
+              <div className="flex items-center border rounded-md h-8 overflow-hidden text-xs">
+                <button
+                  className={`px-2.5 h-full transition-colors ${buildEngine === 'factory' ? 'bg-primary text-primary-foreground font-medium' : 'text-muted-foreground hover:bg-muted'}`}
+                  onClick={() => setBuildEngine('factory')}
+                >
+                  Factory
+                </button>
+                <button
+                  className={`px-2.5 h-full flex items-center gap-1 transition-colors ${buildEngine === 'gemini-cli' ? 'bg-blue-600 text-white font-medium' : 'text-muted-foreground hover:bg-muted'}`}
+                  onClick={() => setBuildEngine('gemini-cli')}
+                >
+                  <Terminal className="h-3 w-3" />
+                  Gemini CLI
+                </button>
+              </div>
+            )}
             <Button
               size="sm"
               variant="outline"
@@ -978,12 +1005,13 @@ export default function Dashboard() {
         ) : (
         <div className="p-8">
           {/* Page header */}
-          {['dashboard', 'specs', 'reports', 'integrations', 'settings'].includes(activeTab) && (
+          {['dashboard', 'specs', 'skills', 'reports', 'integrations', 'settings'].includes(activeTab) && (
             <div className="mb-8 flex items-start justify-between">
               <div>
                 <h1 className="text-2xl font-bold tracking-tight">
                   {activeTab === 'dashboard' && 'Dashboard'}
                   {activeTab === 'specs' && 'Specs'}
+                  {activeTab === 'skills' && 'Skills'}
                   {activeTab === 'reports' && 'Reports'}
                   {activeTab === 'integrations' && 'Integrations'}
                   {activeTab === 'settings' && 'Settings'}
@@ -991,6 +1019,7 @@ export default function Dashboard() {
                 <p className="text-sm text-muted-foreground mt-1">
                   {activeTab === 'dashboard' && 'Overview for the active project'}
                   {activeTab === 'specs' && 'Manage your app specifications'}
+                  {activeTab === 'skills' && 'Reusable recipes the engine auto-matches to builds'}
                   {activeTab === 'reports' && 'View generated build reports'}
                   {activeTab === 'integrations' && 'Connect external services and tools'}
                   {activeTab === 'settings' && 'Configure factory preferences'}
@@ -1025,6 +1054,7 @@ export default function Dashboard() {
             />
           )}
           {activeTab === 'specs' && renderSpecs()}
+          {activeTab === 'skills' && <SkillsView />}
           {activeTab === 'reports' && renderReports()}
           {activeTab === 'knowledge' && <KnowledgeView />}
           {activeTab === 'integrations' && (

@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 /**
  * Queue API — list, enqueue, remove items
  */
@@ -10,8 +11,8 @@ import { parse as parseYaml } from 'yaml';
 // Direct SQLite access for the UI layer
 import Database from 'better-sqlite3';
 
-const DB_PATH = resolve(process.cwd(), '..', 'factory.db');
-const FACTORY_ROOT = resolve(process.cwd(), '..');
+const FACTORY_ROOT = resolve(homedir(), '.factory');
+const DB_PATH = resolve(FACTORY_ROOT, 'factory.db');
 
 function getDb() {
   const db = new Database(DB_PATH);
@@ -56,6 +57,9 @@ function getDb() {
   }
   if (!qColNames.has('target_app')) {
     db.exec(`ALTER TABLE queue_items ADD COLUMN target_app TEXT DEFAULT ''`);
+  }
+  if (!qColNames.has('engine')) {
+    db.exec(`ALTER TABLE queue_items ADD COLUMN engine TEXT DEFAULT 'factory'`);
   }
 
   // Migration: update CHECK constraint to include 'blocked' status
@@ -196,7 +200,7 @@ export async function GET() {
 /** POST — enqueue a new spec */
 export async function POST(request: Request) {
   try {
-    const { specFile, kind, phase, dependsOn, buildAll } = await request.json();
+    const { specFile, kind, phase, dependsOn, buildAll, engine } = await request.json();
 
     if (!specFile || !kind) {
       return NextResponse.json({ error: 'specFile and kind are required' }, { status: 400 });
@@ -297,10 +301,12 @@ export async function POST(request: Request) {
       }
     }
 
+    const engineVal = engine || 'factory';
+
     db.prepare(`
-      INSERT INTO queue_items (id, spec_file, kind, status, priority, phase, depends_on, target_app, added_at)
-      VALUES (?, ?, ?, 'pending', 0, ?, ?, ?, ?)
-    `).run(id, specFile, kind, phaseVal, dependsOnVal, targetApp, now);
+      INSERT INTO queue_items (id, spec_file, kind, status, priority, phase, depends_on, target_app, engine, added_at)
+      VALUES (?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)
+    `).run(id, specFile, kind, phaseVal, dependsOnVal, targetApp, engineVal, now);
 
     const item = db.prepare('SELECT * FROM queue_items WHERE id = ?').get(id);
     db.close();

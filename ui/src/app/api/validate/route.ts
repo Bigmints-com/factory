@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 /**
  * POST /api/validate — Validate a spec file
  * Body: { specFile: "filename.yaml", quick?: boolean }
@@ -14,7 +15,7 @@ import { execSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { parse as parseYaml } from 'yaml';
 
-const FACTORY_ROOT = resolve(process.cwd(), '..');
+const FACTORY_ROOT = resolve(homedir(), '.factory');
 
 /**
  * Resolve a spec filename to its absolute path.
@@ -117,9 +118,15 @@ export async function POST(request: Request) {
     }
 
     // Full mode: run CLI validation
+    const execOptions = {
+      encoding: 'utf-8' as BufferEncoding,
+      timeout: 30000,
+      env: { ...process.env, npm_config_cache: '/tmp/factory-npm-cache', TMPDIR: '/tmp/factory-npm-cache' }
+    };
+
     const result = execSync(
-      `npx tsx engine/cli.ts validate "${specPath}" 2>&1`,
-      { cwd: FACTORY_ROOT, encoding: 'utf-8', timeout: 30000 }
+      `factory validate "${specPath}" 2>&1`,
+      execOptions
     );
 
     // Strip ANSI escape codes

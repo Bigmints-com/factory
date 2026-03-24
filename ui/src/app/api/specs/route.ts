@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 /**
  * GET /api/specs — List all spec files (app specs + feature specs)
  *
@@ -9,7 +10,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 
-const FACTORY_ROOT = resolve(process.cwd(), '..');
+const FACTORY_ROOT = resolve(homedir(), '.factory');
 
 /**
  * Auto-fix common YAML issues before parsing.

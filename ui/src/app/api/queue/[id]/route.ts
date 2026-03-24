@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 /**
  * Queue item detail API — get details, retry, update priority.
  */
@@ -6,7 +7,7 @@ import { NextResponse } from 'next/server';
 import { resolve } from 'node:path';
 import Database from 'better-sqlite3';
 
-const DB_PATH = resolve(process.cwd(), '..', 'factory.db');
+const DB_PATH = resolve(homedir(), '.factory', 'factory.db');
 
 function getDb() {
   const db = new Database(DB_PATH);

@@ -111,6 +111,11 @@ function initSchema(db: Database.Database): void {
     if (!qColNames.has('error_category')) {
         db.exec(`ALTER TABLE queue_items ADD COLUMN error_category TEXT`);
     }
+
+    // Add engine column for per-build engine selection (factory vs gemini-cli)
+    if (!qColNames.has('engine')) {
+        db.exec(`ALTER TABLE queue_items ADD COLUMN engine TEXT DEFAULT 'factory'`);
+    }
 }
 
 /** Log a build result to the knowledge base as a structured debrief. */

@@ -38,6 +38,7 @@ interface QueueItem {
   kind: string;
   status: string;
   priority: number;
+  engine?: string;
   added_at: string;
   started_at: string | null;
   completed_at: string | null;
@@ -711,6 +712,12 @@ export function QueueView({ onToggleOutput, outputPanelOpen, queueRunning }: Que
                       }`}>
                         {item.kind === 'FeatureSpec' ? 'Feature' : 'App'}
                       </Badge>
+                      {item.engine === 'gemini-cli' && (
+                        <Badge variant="outline" className="text-[10px] border-blue-500/30 text-blue-400 gap-1">
+                          <Terminal className="h-2.5 w-2.5" />
+                          Gemini CLI
+                        </Badge>
+                      )}
                       <span className="text-xs text-muted-foreground ml-auto mr-3">
                         {formatTime(item.added_at)}
                         {item.duration_ms ? ` · ${formatDuration(item.duration_ms)}` : ''}
@@ -736,6 +743,9 @@ export function QueueView({ onToggleOutput, outputPanelOpen, queueRunning }: Que
                       {/* Meta info */}
                       <div className="text-[11px] text-muted-foreground space-y-0.5 mb-3 pl-1">
                         <p><span className="text-muted-foreground/60">Spec:</span> {item.spec_file.split('/').pop()}</p>
+                        {item.engine && item.engine !== 'factory' && (
+                          <p><span className="text-muted-foreground/60">Engine:</span> <span className="text-blue-400">{item.engine}</span></p>
+                        )}
                         {item.started_at && <p><span className="text-muted-foreground/60">Started:</span> {new Date(item.started_at).toLocaleString()}</p>}
                         {item.completed_at && <p><span className="text-muted-foreground/60">Finished:</span> {new Date(item.completed_at).toLocaleString()}</p>}
                         {item.duration_ms && <p><span className="text-muted-foreground/60">Duration:</span> {formatDuration(item.duration_ms)}</p>}
